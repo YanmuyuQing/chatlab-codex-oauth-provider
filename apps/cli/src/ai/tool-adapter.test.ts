@@ -120,5 +120,11 @@ describe('adaptToolsForAgent', () => {
     assert.ok(text.includes('total: 2'))
     assert.ok(text.includes('hello world'))
     assert.ok(text.includes('hi there'))
+    assert.deepEqual(result.details, {
+      total: 2,
+      timeRange: '全部时间',
+      messages: ['2024/3/10 00:00:00 Alice: hello world', '2024/3/10 00:01:00 Bob: hi there'],
+      returned: 2,
+    })
   })
 })

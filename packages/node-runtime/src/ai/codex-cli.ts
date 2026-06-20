@@ -3,6 +3,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { extractToolResultText } from '@openchatlab/core'
 import type { CompressionLlmAdapter } from './compression/types'
 import { shouldUseChartCapabilityForMessage } from './chart-runtime'
 
@@ -71,6 +72,39 @@ export interface CreateCodexCliCompressionAdapterOptions {
   onError?: (error: unknown) => void
 }
 
+export type CodexCliChatContextErrorCode = 'NO_CHAT_CONTEXT' | 'READ_CHAT_CONTEXT_FAILED'
+
+export class CodexCliChatContextError extends Error {
+  readonly code: CodexCliChatContextErrorCode
+
+  constructor(code: CodexCliChatContextErrorCode, message?: string) {
+    super(message ?? code)
+    this.name = 'CodexCliChatContextError'
+    this.code = code
+  }
+}
+
+export interface CodexCliChatContextTool {
+  name: string
+  execute(toolCallId: string, params: unknown, signal?: AbortSignal): Promise<unknown>
+}
+
+export interface CodexCliChatSnapshot {
+  name: string
+  totalMessages: number
+  firstMessageTs: number | null
+  lastMessageTs: number | null
+}
+
+export interface BuildCodexCliChatContextOptions {
+  hasSelectedChat: boolean
+  tools: readonly CodexCliChatContextTool[]
+  dataSnapshot?: CodexCliChatSnapshot
+  maxMessagesLimit?: number
+  locale?: string
+  abortSignal?: AbortSignal
+}
+
 interface ProcessResult {
   stdout: string
   stderr: string
@@ -124,21 +158,138 @@ export function getCodexCliToolFallback(options: {
   requestedToolNames?: readonly string[]
   locale?: string
 }): string | null {
-  const explicitlyRequiresInternalData =
-    /(?:执行|运行).{0,8}\bsql\b|\bsql\b.{0,8}(?:执行|运行)|(?:查询|读取).{0,8}(?:聊天数据库|聊天记录)|\b(?:run|execute)\s+(?:an?\s+)?sql\b|\bquery\s+(?:the\s+)?(?:chat\s+database|chat\s+history)\b/i.test(
+  const requestedTools = new Set(options.requestedToolNames ?? [])
+  const requestsChart = requestedTools.has('render_chart') || shouldUseChartCapabilityForMessage(options.userMessage)
+  const requestsDirectSql =
+    requestedTools.has('execute_sql') &&
+    /(?:执行|运行).{0,8}\bsql\b|\bsql\b.{0,8}(?:执行|运行)|\b(?:run|execute)\s+(?:an?\s+)?sql\b/i.test(
       options.userMessage
     )
-  if (
-    (options.requestedToolNames?.length ?? 0) === 0 &&
-    !explicitlyRequiresInternalData &&
-    !shouldUseChartCapabilityForMessage(options.userMessage)
-  ) {
-    return null
+  if (!requestsChart && !requestsDirectSql) return null
+
+  const isZh = (options.locale ?? 'zh-CN').toLowerCase().startsWith('zh')
+  if (requestsChart) {
+    return isZh
+      ? 'Codex CLI Provider 当前可以读取 ChatLab 提供的聊天上下文并生成图表分析建议，但尚未接入 ChatLab 原生图表渲染。请切换支持图表工具的 API Provider 以生成可视化图表。'
+      : 'Codex CLI Provider can read ChatLab-provided chat context and suggest chart analysis, but native ChatLab chart rendering is not connected. Switch to an API provider with chart tools to generate a visual chart.'
+  }
+  return isZh
+    ? 'Codex CLI Provider 不会直接执行 SQL。当前可以基于 ChatLab 安全提供的聊天记录上下文进行分析；如需执行自定义 SQL，请切换支持内部工具调用的 API Provider。'
+    : 'Codex CLI Provider does not execute SQL directly. It can analyze chat context safely provided by ChatLab; switch to an API provider with internal tool calling to execute custom SQL.'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeMessageLimit(value: number | undefined): number {
+  if (!Number.isFinite(value) || !value) return 100
+  return Math.min(Math.max(Math.trunc(value), 1), 50_000)
+}
+
+export function getCodexCliRetryMessageLimit(value: number | undefined): number {
+  const current = normalizeMessageLimit(value)
+  return Math.max(100, Math.min(1000, Math.floor(current / 2)))
+}
+
+function formatSnapshotTime(timestamp: number | null | undefined, locale: string): string {
+  if (!timestamp) return locale.startsWith('zh') ? '未知' : 'unknown'
+  return new Date(timestamp * 1000).toLocaleString(locale.startsWith('zh') ? 'zh-CN' : 'en-US')
+}
+
+export async function buildCodexCliChatContext(options: BuildCodexCliChatContextOptions): Promise<string> {
+  const locale = options.locale ?? 'zh-CN'
+  const isZh = locale.toLowerCase().startsWith('zh')
+  if (!options.hasSelectedChat) {
+    throw new CodexCliChatContextError('NO_CHAT_CONTEXT')
   }
 
-  return (options.locale ?? 'zh-CN').toLowerCase().startsWith('zh')
-    ? 'Codex CLI Provider 暂不支持 ChatLab 内部工具调用，因此无法在本轮执行 SQL、查询聊天数据库或生成 ChatLab 原生图表。请切换到支持 function calling 的 API Provider；普通文本对话与摘要仍可使用。'
-    : 'Codex CLI Provider does not currently support ChatLab internal tool calling, so it cannot execute SQL, query the chat database, or generate native ChatLab charts in this turn. Switch to an API provider with function calling; normal text chat and summaries remain available.'
+  const recentMessagesTool = options.tools.find((tool) => tool.name === 'get_recent_messages')
+  if (!recentMessagesTool) {
+    throw new CodexCliChatContextError('READ_CHAT_CONTEXT_FAILED', 'get_recent_messages tool is unavailable')
+  }
+
+  const maxMessagesLimit = normalizeMessageLimit(options.maxMessagesLimit)
+
+  try {
+    const result = await recentMessagesTool.execute(
+      'codex-cli-chat-context',
+      { limit: maxMessagesLimit },
+      options.abortSignal
+    )
+    const text = extractToolResultText(result).trim()
+    if (!text || /^error:/i.test(text)) {
+      throw new Error(text || 'get_recent_messages returned no readable context')
+    }
+
+    const details = isRecord(result) && isRecord(result.details) ? result.details : {}
+    const returned =
+      typeof details.returned === 'number' && Number.isFinite(details.returned)
+        ? details.returned
+        : Math.min(options.dataSnapshot?.totalMessages ?? maxMessagesLimit, maxMessagesLimit)
+    const total =
+      typeof details.total === 'number' && Number.isFinite(details.total)
+        ? details.total
+        : (options.dataSnapshot?.totalMessages ?? returned)
+    const name = options.dataSnapshot?.name || (isZh ? '当前选中聊天' : 'Current selected chat')
+    const timeRange =
+      details.timeRange ??
+      `${formatSnapshotTime(options.dataSnapshot?.firstMessageTs, locale)} - ${formatSnapshotTime(
+        options.dataSnapshot?.lastMessageTs,
+        locale
+      )}`
+
+    if (isZh) {
+      return `ChatLab Context:
+当前聊天对象：${name}
+消息总数：${total}
+本次消息上限：${maxMessagesLimit}
+本次实际发送消息数：${returned}
+时间范围：${typeof timeRange === 'string' ? timeRange : JSON.stringify(timeRange)}
+上下文来源：ChatLab 已导入聊天记录，通过 ChatLab 安全数据访问层读取
+
+重要说明：
+- ChatLab 已经在下方提供了当前可用的聊天记录，请直接基于这些数据回答。
+- 不要声称你无法读取 ChatLab 数据库或聊天记录。
+- 如果这些记录不足以支持完整结论，请说“当前传入的上下文不足”，并明确分析范围。
+- “所有内容”受本次消息上限和上下文预算约束，不代表数据库中的全部 ${total} 条消息都已发送。
+
+本次可用聊天记录：
+${text}`
+    }
+
+    return `ChatLab Context:
+Current chat: ${name}
+Total messages: ${total}
+Configured message limit: ${maxMessagesLimit}
+Messages included in this request: ${returned}
+Time range: ${typeof timeRange === 'string' ? timeRange : JSON.stringify(timeRange)}
+Source: ChatLab imported chat records, read through ChatLab's safe data-access layer
+
+Important:
+- ChatLab has provided the available chat records below. Base your answer on this data.
+- Do not claim that you cannot read the ChatLab database or chat records.
+- If the records are insufficient, say "the context provided for this request is insufficient" and state the scope.
+- "All content" is bounded by the configured message limit and context budget; not all ${total} database messages are necessarily included.
+
+Available chat records:
+${text}`
+  } catch (error) {
+    if (error instanceof CodexCliChatContextError) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    throw new CodexCliChatContextError('READ_CHAT_CONTEXT_FAILED', message)
+  }
+}
+
+export function formatCodexCliChatContextError(error: unknown, locale = 'zh-CN'): string {
+  const isZh = locale.toLowerCase().startsWith('zh')
+  if (error instanceof CodexCliChatContextError && error.code === 'NO_CHAT_CONTEXT') {
+    return isZh
+      ? '当前没有可用聊天记录上下文，请先选择或导入聊天记录。'
+      : 'No chat context is currently available. Select or import a chat first.'
+  }
+  const detail = error instanceof Error && error.message ? error.message : isZh ? '未知错误' : 'unknown error'
+  return isZh ? `读取 ChatLab 聊天上下文失败：${detail}` : `Failed to read ChatLab chat context: ${detail}`
 }
 
 function executableNames(platform: NodeJS.Platform): string[] {

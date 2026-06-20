@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { getSegmentMessagesTool } from './get-segment-messages'
 import { getSegmentSummariesTool } from './get-segment-summaries'
 import { searchMessagesTool } from './search-messages'
+import { recentMessagesTool } from './recent-messages'
 import { searchSegmentsTool } from './search-segments'
 import { schemaTool, sqlQueryTool } from './sql-query'
 import { SQL_TOOL_DEFS, createSqlToolDefinition } from '../sql'
@@ -28,6 +29,23 @@ function createSqlTool(name: string) {
 }
 
 describe('high-risk analysis tool definitions', () => {
+  it('get_recent_messages treats maxMessagesLimit as a cap and allows a smaller retry batch', async () => {
+    const calls: number[] = []
+    const context = createContext(
+      {
+        async getRecentMessages(options) {
+          calls.push(options?.limit ?? 0)
+          return { total: 48713, messages: [] }
+        },
+      },
+      { maxMessagesLimit: 3000 }
+    )
+
+    await recentMessagesTool.handler({ limit: 1000 }, context)
+
+    assert.deepEqual(calls, [1000])
+  })
+
   it('search_messages passes filters to the provider and returns expanded context messages', async () => {
     const contextFilter: TimeFilter = { startTs: 1710000000, endTs: 1710000100 }
     const searchCalls: Array<{ keywords: string[]; options: unknown }> = []

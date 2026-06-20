@@ -17,6 +17,7 @@ import {
   type TruncationStrategy,
   createChartSchemaGateState,
   wrapWithChartSchemaGate,
+  type PreprocessConfig,
 } from '@openchatlab/node-runtime'
 import { getServerAiLogger } from './logger'
 
@@ -35,6 +36,11 @@ export interface ServerToolContext {
   db: DatabaseAdapter
   sessionId: string
   locale?: string
+  timeFilter?: ToolExecutionContext['timeFilter']
+  maxMessagesLimit?: number
+  preprocessConfig?: PreprocessConfig
+  ownerPlatformId?: string
+  abortSignal?: AbortSignal
 }
 
 function convertJsonSchemaToParameters(schema: ToolDefinition['inputSchema']) {
@@ -76,6 +82,9 @@ export function adaptToolsForAgent(
             dataProvider: new CoreDataProvider(ctx.db),
             sessionId: ctx.sessionId,
             locale: ctx.locale,
+            timeFilter: ctx.timeFilter,
+            maxMessagesLimit: ctx.maxMessagesLimit,
+            abortSignal: ctx.abortSignal,
             segmentText: (texts, locale, options) => batchSegmentWithFrequency(texts, locale as any, options as any),
           }
           try {
@@ -94,7 +103,10 @@ export function adaptToolsForAgent(
               const { rawMessages: _rawInData, ...extraDetails } = (result.data ?? {}) as Record<string, unknown>
               const pipelineResult = applyPreprocessingPipeline({
                 rawMessages: result.rawMessages as PreprocessableMessage[],
+                preprocessConfig: ctx.preprocessConfig,
                 locale: ctx.locale,
+                anonymizeNames: ctx.preprocessConfig?.anonymizeNames ?? false,
+                ownerPlatformId: ctx.ownerPlatformId,
                 maxToolResultTokens: tokenBudget,
                 truncationStrategy: TOOL_TRUNCATION_STRATEGY[tool.name] ?? 'keep_last',
                 extraDetails,
@@ -102,7 +114,7 @@ export function adaptToolsForAgent(
               })
               return {
                 content: [{ type: 'text', text: pipelineResult.text }],
-                details: Object.keys(chartDetails).length > 0 ? chartDetails : null,
+                details: { ...pipelineResult.details, ...chartDetails },
               }
             }
 

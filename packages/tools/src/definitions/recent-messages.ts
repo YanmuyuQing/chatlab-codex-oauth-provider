@@ -23,7 +23,8 @@ const inputSchema: JsonSchema = {
 
 async function handler(params: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const { locale, timeFilter: contextTimeFilter, maxMessagesLimit } = context
-  const limit = maxMessagesLimit || (params.limit as number) || 100
+  const requestedLimit = (params.limit as number) || maxMessagesLimit || 100
+  const limit = maxMessagesLimit ? Math.min(requestedLimit, maxMessagesLimit) : requestedLimit
   const effectiveTimeFilter = parseExtendedTimeParams(params as any, contextTimeFilter)
 
   const result = await context.dataProvider!.getRecentMessages({ timeFilter: effectiveTimeFilter, limit })

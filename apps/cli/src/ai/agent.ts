@@ -21,7 +21,10 @@ import {
   CodexCliError,
   AgentEventHandler,
   formatAIError,
+  formatCodexCliChatContextError,
   formatCodexCliError,
+  buildCodexCliChatContext,
+  getCodexCliRetryMessageLimit,
   getCodexCliToolFallback,
   isCodexCliProvider,
   shouldUseChartCapabilityForMessage,
@@ -64,6 +67,8 @@ export interface RunAgentOptions {
   ownerInfo?: OwnerInfo
   mentionedMembers?: MentionedMember[]
   dataSnapshot?: DataSnapshot
+  hasSelectedChat?: boolean
+  maxMessagesLimit?: number
   thinkingLevel?: string
   chartAutoMode?: ChartAutoMode
 }
@@ -87,6 +92,8 @@ export async function runServerAgent(options: RunAgentOptions): Promise<void> {
     ownerInfo,
     mentionedMembers,
     dataSnapshot,
+    hasSelectedChat = false,
+    maxMessagesLimit,
     thinkingLevel,
     chartAutoMode = 'suggest',
   } = options
@@ -173,6 +180,30 @@ export async function runServerAgent(options: RunAgentOptions): Promise<void> {
       return
     }
 
+    const loadChatContext = (messageLimit: number | undefined) =>
+      buildCodexCliChatContext({
+        hasSelectedChat,
+        tools,
+        dataSnapshot,
+        maxMessagesLimit: messageLimit,
+        locale,
+        abortSignal,
+      })
+
+    let chatContext: string
+    try {
+      chatContext = await loadChatContext(maxMessagesLimit)
+    } catch (error) {
+      handler.emitStatus('error', [], { force: true })
+      onEvent({
+        type: 'error',
+        error: { name: 'CodexCliChatContextError', message: formatCodexCliChatContextError(error, locale) },
+      })
+      onEvent({ type: 'done', isFinished: true, usage: handler.cloneUsage() })
+      return
+    }
+
+    let systemPromptWithChatContext = `${systemPrompt}\n\n${chatContext}`
     let history: SimpleHistoryMessage[] = []
     const loadHistory = () => {
       try {
@@ -184,7 +215,7 @@ export async function runServerAgent(options: RunAgentOptions): Promise<void> {
     const requestCodex = () =>
       runCodexCli({
         messages: [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: systemPromptWithChatContext },
           ...history.map((message) => ({
             role: message.role === 'summary' ? 'assistant' : message.role,
             content: message.content,
@@ -204,21 +235,24 @@ export async function runServerAgent(options: RunAgentOptions): Promise<void> {
         if (
           !(error instanceof CodexCliError) ||
           error.code !== 'CONTEXT_TOO_LONG' ||
-          !compressionConfig?.enabled ||
           historyLeafMessageId !== undefined
         ) {
           throw error
         }
 
-        const compressionResult = await manualCompress(
-          aiChatId,
-          compressionConfig,
-          systemPrompt,
-          codexCompressionAdapter,
-          aiChatManager,
-          aiLogger ?? undefined
-        )
-        emitCompressionResult(compressionResult)
+        if (compressionConfig?.enabled) {
+          const compressionResult = await manualCompress(
+            aiChatId,
+            compressionConfig,
+            systemPromptWithChatContext,
+            codexCompressionAdapter,
+            aiChatManager,
+            aiLogger ?? undefined
+          )
+          emitCompressionResult(compressionResult)
+        }
+        chatContext = await loadChatContext(getCodexCliRetryMessageLimit(maxMessagesLimit))
+        systemPromptWithChatContext = `${systemPrompt}\n\n${chatContext}`
         history = loadHistory()
         content = await requestCodex()
       }
