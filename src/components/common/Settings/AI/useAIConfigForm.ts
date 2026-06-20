@@ -119,6 +119,7 @@ export function useAIConfigForm(props: {
 
   const currentProviderDef = computed(() => llmStore.providerRegistry.find((p) => p.id === formData.value.provider))
 
+  const isCodexCli = computed(() => currentProviderDef.value?.authMode === 'external-cli')
   const isLocalMode = computed(() => connectionMode.value === 'local')
   const isOpenAICompat = computed(() => connectionMode.value === 'openai-compat')
   const isPresetMode = computed(() => connectionMode.value === 'preset')
@@ -186,6 +187,7 @@ export function useAIConfigForm(props: {
     }
 
     if (!provider) return false
+    if (isCodexCli.value) return !!model.trim()
     return apiKey.trim() || existingKeySet
   })
 
@@ -212,6 +214,8 @@ export function useAIConfigForm(props: {
   }
 
   const resolvedApiUrl = computed(() => {
+    if (isCodexCli.value) return ''
+
     const rawInput = formData.value.baseUrl?.trim()
     const raw = rawInput || (isPresetMode.value ? currentProviderDef.value?.defaultBaseUrl : '')
     if (!raw) return ''
@@ -576,7 +580,7 @@ export function useAIConfigForm(props: {
       if (!baseUrl) return
       if (isOpenAICompat.value && !apiKey && !canReuse) return
     } else {
-      if (!provider || (!apiKey && !canReuse)) {
+      if (!provider || (!isCodexCli.value && !apiKey && !canReuse)) {
         validationResult.value = 'idle'
         validationMessage.value = ''
         return
@@ -589,7 +593,7 @@ export function useAIConfigForm(props: {
     const configId = !apiKey && canReuse ? props.config.value?.id : undefined
 
     try {
-      const testApiKey = !apiKey && canReuse ? '' : apiKey || 'sk-no-key-required'
+      const testApiKey = isCodexCli.value ? '' : !apiKey && canReuse ? '' : apiKey || 'sk-no-key-required'
       const result = await useLLMService().validateApiKey(
         provider || 'openai-compatible',
         testApiKey,
@@ -721,7 +725,7 @@ export function useAIConfigForm(props: {
 
     isValidating.value = true
     try {
-      const testApiKey = formData.value.apiKey.trim() || 'sk-no-key-required'
+      const testApiKey = isCodexCli.value ? '' : formData.value.apiKey.trim() || 'sk-no-key-required'
       const result = await useLLMService().validateApiKey(
         formData.value.provider || 'openai-compatible',
         testApiKey,
@@ -801,6 +805,7 @@ export function useAIConfigForm(props: {
     officialProviders,
     customProviders,
     currentProviderDef,
+    isCodexCli,
     isLocalMode,
     isOpenAICompat,
     isPresetMode,

@@ -5,6 +5,7 @@
 
 import type { DatabaseManager, AIChatManager, AgentStreamChunk } from '@openchatlab/node-runtime'
 import {
+  CODEX_CLI_CONTEXT_WINDOW,
   CHART_CAPABILITY_CORE_TOOLS,
   SkillManager,
   buildSkillMenuWithBuiltinChart,
@@ -13,6 +14,7 @@ import {
   getAllowedBuiltinToolsForChartAutoSkill,
   getChartCapabilitySkill,
   getSkillConfigWithBuiltinChart,
+  isCodexCliProvider,
   resolveChartRuntimeForRequest,
 } from '@openchatlab/node-runtime'
 import { getChatOverview, normalizeBuiltinToolNames } from '@openchatlab/core'
@@ -97,7 +99,12 @@ export function createCliRunAgentStream(
 
     const llmConfig = getDefaultAssistantConfig(aiDataDir)
     const maxToolResultPercent = compressionConfig?.maxToolResultPercent ?? 50
-    const contextWindow = llmConfig ? (buildPiModel(llmConfig).contextWindow ?? 128000) : 128000
+    const contextWindow =
+      llmConfig && isCodexCliProvider(llmConfig.provider)
+        ? CODEX_CLI_CONTEXT_WINDOW
+        : llmConfig
+          ? (buildPiModel(llmConfig).contextWindow ?? 128000)
+          : 128000
     const maxToolResultTokens = Math.floor(contextWindow * (maxToolResultPercent / 100))
 
     const db = (dbManager as any).open?.(sessionId)
@@ -129,14 +136,14 @@ export function createCliRunAgentStream(
     skillMgr.init()
     const toolNames = agentTools.map((t: { name: string }) => t.name)
 
-    let resolvedSkillDef: { name: string; prompt: string } | undefined
+    let resolvedSkillDef: { name: string; prompt: string; tools?: string[] } | undefined
     let resolvedSkillMenu: string | undefined
     if (isChartCapability) {
       const def = chartRuntime.skillDef ?? getChartCapabilitySkill(locale ?? 'zh-CN')
-      resolvedSkillDef = { name: def.name, prompt: def.prompt }
+      resolvedSkillDef = { name: def.name, prompt: def.prompt, tools: def.tools }
     } else if (skillId) {
       const def = skillMgr.getSkillConfig(skillId)
-      if (def) resolvedSkillDef = { name: def.name, prompt: def.prompt }
+      if (def) resolvedSkillDef = { name: def.name, prompt: def.prompt, tools: def.tools }
     } else if (enableAutoSkill) {
       const baseMenu = skillMgr.getSkillMenu(chatType ?? 'group', toolNames)
       const menu =

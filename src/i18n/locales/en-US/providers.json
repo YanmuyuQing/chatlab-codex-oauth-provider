@@ -68,6 +68,9 @@
   "xai": {
     "name": "xAI"
   },
+  "codex-cli": {
+    "name": "Codex CLI"
+  },
   "openai-compatible": {
     "name": "Third-party"
   }

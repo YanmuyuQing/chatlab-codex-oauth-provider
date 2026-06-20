@@ -13,16 +13,24 @@ import {
   buildSkillMenuWithBuiltinChart,
   CHART_CAPABILITY_ANALYSIS_TOOLS,
   checkAndCompress,
+  CodexCliError,
+  createCodexCliCompressionAdapter,
   createCompressionLlmAdapter,
   createDataSnapshotFromOverview,
   formatAIError,
+  formatCodexCliError,
+  getCodexCliToolFallback,
   getAllowedBuiltinToolsForChartAutoSkill,
   getChartCapabilitySkill,
   initTokenizer,
+  isCodexCliProvider,
+  manualCompress,
   resolveChartRuntimeForRequest,
+  runCodexCli,
 } from '@openchatlab/node-runtime'
 import type { CompressionConfig, CompressionLlmAdapter, AgentRuntimeStatus } from '@openchatlab/node-runtime'
 import { Agent, type AgentStreamChunk, type SkillContext } from './agent'
+import { buildSystemPrompt } from './agent/prompt-builder'
 import type { ToolContext } from './tools/types'
 import { getDefaultAssistantConfig, buildPiModel, findModelDefinition } from './llm'
 import type { AIServiceConfig } from './llm/types'
@@ -32,7 +40,7 @@ import type { AssistantConfig } from './assistant/types'
 import * as skillManager from './skills'
 import { aiLogger } from './logger'
 import { serializeError } from './serialize-error'
-import { getManager as getAIChatManager } from './chats'
+import { getHistoryForAgent, getManager as getAIChatManager } from './chats'
 import { t } from '../i18n'
 import * as workerManager from '../worker/workerManager'
 import { getProviderInfo, type LLMProvider } from './llm'
@@ -44,7 +52,20 @@ function resolveProviderName(provider?: LLMProvider): string {
   return provider ? getProviderInfo(provider)?.name || provider : t('llm.genericProviderName')
 }
 
-function buildCompressionAdapter(activeAIConfig: AIServiceConfig, onCompressing?: () => void): CompressionLlmAdapter {
+function buildCompressionAdapter(
+  activeAIConfig: AIServiceConfig,
+  onCompressing?: () => void,
+  abortSignal?: AbortSignal
+): CompressionLlmAdapter {
+  if (isCodexCliProvider(activeAIConfig.provider)) {
+    return createCodexCliCompressionAdapter({
+      abortSignal,
+      onCompressing,
+      onError: (error) =>
+        aiLogger.warn('Compression', 'Codex CLI compression attempt failed', { error: String(error) }),
+    })
+  }
+
   const modelDef = findModelDefinition(activeAIConfig.provider, activeAIConfig.model || '')
   return createCompressionLlmAdapter({
     piModel: buildPiModel(activeAIConfig),
@@ -104,8 +125,6 @@ export function createElectronRunAgentStream(): (
       onEvent({ type: 'error', error: { name: 'ConfigError', message: t('llm.notConfigured') } })
       return
     }
-    const piModel = buildPiModel(activeAIConfig)
-
     if (compressionConfig?.enabled && aiChatId && historyLeafMessageId === undefined) {
       try {
         const tempAssistantConfig = assistantId
@@ -117,25 +136,29 @@ export function createElectronRunAgentStream(): (
           aiChatId,
           compressionConfig as CompressionConfig,
           systemPromptForCompression,
-          buildCompressionAdapter(activeAIConfig, () => {
-            onEvent({
-              type: 'status',
-              status: {
-                phase: 'compressing',
-                round: 0,
-                toolsUsed: 0,
-                contextTokens: 0,
-                totalUsage: {
-                  promptTokens: 0,
-                  completionTokens: 0,
-                  totalTokens: 0,
-                  cacheReadTokens: 0,
-                  cacheWriteTokens: 0,
-                },
-                updatedAt: Date.now(),
-              } satisfies AgentRuntimeStatus,
-            })
-          }),
+          buildCompressionAdapter(
+            activeAIConfig,
+            () => {
+              onEvent({
+                type: 'status',
+                status: {
+                  phase: 'compressing',
+                  round: 0,
+                  toolsUsed: 0,
+                  contextTokens: 0,
+                  totalUsage: {
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    totalTokens: 0,
+                    cacheReadTokens: 0,
+                    cacheWriteTokens: 0,
+                  },
+                  updatedAt: Date.now(),
+                } satisfies AgentRuntimeStatus,
+              })
+            },
+            abortSignal
+          ),
           getAIChatManager(),
           compressionLogger
         )
@@ -246,6 +269,122 @@ export function createElectronRunAgentStream(): (
       abortSignal,
     }
 
+    if (isCodexCliProvider(activeAIConfig.provider)) {
+      const toolFallback = getCodexCliToolFallback({
+        userMessage,
+        requestedToolNames: skillCtx?.skillDef?.tools,
+        locale,
+      })
+      if (toolFallback) {
+        onEvent({ type: 'content', content: toolFallback })
+        onEvent({
+          type: 'done',
+          isFinished: true,
+          usage: {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        })
+        return
+      }
+
+      let history: Array<{ role: 'user' | 'assistant' | 'summary'; content: string }> = []
+      const loadHistory = () => {
+        try {
+          return getHistoryForAgent(aiChatId, undefined, historyLeafMessageId)
+        } catch {
+          return []
+        }
+      }
+
+      const providerSystemPrompt = buildSystemPrompt(
+        chatType ?? 'group',
+        assistantConfig?.systemPrompt,
+        ownerInfo,
+        locale ?? 'zh-CN',
+        skillCtx,
+        mentionedMembers as ToolContext['mentionedMembers'],
+        dataSnapshot
+      )
+      const requestCodex = () =>
+        runCodexCli({
+          messages: [
+            { role: 'system', content: providerSystemPrompt },
+            ...history.map((message) => ({
+              role: message.role === 'summary' ? 'assistant' : message.role,
+              content: message.content,
+            })),
+            { role: 'user', content: userMessage },
+          ],
+          abortSignal,
+        })
+
+      history = loadHistory()
+
+      try {
+        let content: string
+        try {
+          content = await requestCodex()
+        } catch (error) {
+          if (
+            !(error instanceof CodexCliError) ||
+            error.code !== 'CONTEXT_TOO_LONG' ||
+            !compressionConfig?.enabled ||
+            historyLeafMessageId !== undefined
+          ) {
+            throw error
+          }
+
+          const compressionResult = await manualCompress(
+            aiChatId,
+            compressionConfig as CompressionConfig,
+            providerSystemPrompt,
+            buildCompressionAdapter(activeAIConfig, undefined, abortSignal),
+            getAIChatManager(),
+            compressionLogger
+          )
+          if (compressionResult.compressed && compressionResult.summaryContent) {
+            onEvent({
+              type: 'compression_done',
+              compressionResult: {
+                summaryContent: compressionResult.summaryContent,
+                tokensBefore: compressionResult.tokensBefore ?? 0,
+                tokensAfter: compressionResult.tokensAfter ?? 0,
+                timestamp: Date.now(),
+              },
+            })
+          }
+          history = loadHistory()
+          content = await requestCodex()
+        }
+
+        if (!abortSignal.aborted) onEvent({ type: 'content', content })
+        onEvent({
+          type: 'done',
+          isFinished: true,
+          usage: {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        })
+      } catch (error) {
+        if (abortSignal.aborted) return
+        const message = formatCodexCliError(error, locale)
+        const serializedError = serializeError(new Error(message), activeAIConfig.provider)
+        serializedError.friendlyMessage = message
+        aiLogger.error('AgentStream', `Codex CLI execution error: ${requestId}`, serializedError)
+        onEvent({ type: 'error', error: serializedError, isFinished: true })
+      }
+      return
+    }
+
+    const piModel = buildPiModel(activeAIConfig)
     const agent = new Agent(
       context,
       piModel,

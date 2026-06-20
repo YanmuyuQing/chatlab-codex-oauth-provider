@@ -19,11 +19,18 @@ import type { SessionRuntimeAdapter } from './adapters'
 
 export interface LlmConfig {
   apiKey: string
+  provider?: string
 }
 
 export interface SummaryServiceDeps {
   getLlmConfig(): LlmConfig | null
   buildPiModel(config: LlmConfig): ReturnType<typeof import('../ai').buildPiModel>
+  llmComplete?(
+    config: LlmConfig,
+    systemPrompt: string,
+    userPrompt: string,
+    options?: { maxTokens?: number; temperature?: number }
+  ): Promise<string | null>
 }
 
 function buildSummaryDeps(db: DatabaseAdapter, llmConfig: LlmConfig, deps: SummaryServiceDeps): SummaryDeps {
@@ -41,6 +48,10 @@ function buildSummaryDeps(db: DatabaseAdapter, llmConfig: LlmConfig, deps: Summa
       return getSegmentSummary(db, segmentId)
     },
     async llmComplete(systemPrompt, userPrompt, options) {
+      if (deps.llmComplete) {
+        const customResult = await deps.llmComplete(llmConfig, systemPrompt, userPrompt, options)
+        if (customResult !== null) return customResult
+      }
       const result = await completeSimple(
         piModel,
         {

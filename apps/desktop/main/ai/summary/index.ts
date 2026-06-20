@@ -6,7 +6,7 @@
  */
 
 import Database from 'better-sqlite3'
-import { completeSimple, type PiTextContent } from '@openchatlab/node-runtime'
+import { completeSimple, isCodexCliProvider, runCodexCli, type PiTextContent } from '@openchatlab/node-runtime'
 import { loadSegmentMessages, getSegmentSummary, saveSegmentSummary } from '@openchatlab/core'
 import { getFastModelConfig, buildPiModel } from '../llm'
 import { getDbPath, openDatabase } from '../../database/core'
@@ -56,6 +56,15 @@ function buildDeps(dbSessionId: string): SummaryDeps {
     async llmComplete(systemPrompt, userPrompt, options) {
       const fastConfig = getFastModelConfig()
       if (!fastConfig) throw new Error(t('llm.notConfigured'))
+
+      if (isCodexCliProvider(fastConfig.provider)) {
+        return runCodexCli({
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        })
+      }
 
       const piModel = buildPiModel(fastConfig)
       const result = await completeSimple(

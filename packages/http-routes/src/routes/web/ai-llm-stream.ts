@@ -1,6 +1,12 @@
 import type { FastifyInstance } from 'fastify'
 import type { HttpRouteContext } from '../../context'
-import { buildPiModel, runSimpleLlmStream } from '@openchatlab/node-runtime'
+import {
+  buildPiModel,
+  formatCodexCliError,
+  isCodexCliProvider,
+  runCodexCli,
+  runSimpleLlmStream,
+} from '@openchatlab/node-runtime'
 
 export function registerAiLlmStreamRoutes(server: FastifyInstance, ctx: HttpRouteContext): void {
   const store = ctx.llmConfigStore
@@ -19,7 +25,6 @@ export function registerAiLlmStreamRoutes(server: FastifyInstance, ctx: HttpRout
       return reply.code(400).send({ success: false, error: 'LLM service not configured' })
     }
 
-    const piModel = buildPiModel(llmConfig)
     const abortController = new AbortController()
 
     reply.raw.writeHead(200, {
@@ -38,6 +43,14 @@ export function registerAiLlmStreamRoutes(server: FastifyInstance, ctx: HttpRout
     }
 
     try {
+      if (isCodexCliProvider(llmConfig.provider)) {
+        const content = await runCodexCli({ messages, abortSignal: abortController.signal })
+        sendChunk({ content, isFinished: false })
+        sendChunk({ content: '', isFinished: true, finishReason: 'stop' })
+        return
+      }
+
+      const piModel = buildPiModel(llmConfig)
       await runSimpleLlmStream({
         messages,
         apiKey: llmConfig.apiKey,
@@ -49,7 +62,11 @@ export function registerAiLlmStreamRoutes(server: FastifyInstance, ctx: HttpRout
       })
     } catch (error) {
       if (abortController.signal.aborted) return
-      const msg = error instanceof Error ? error.message : String(error)
+      const msg = isCodexCliProvider(llmConfig.provider)
+        ? formatCodexCliError(error)
+        : error instanceof Error
+          ? error.message
+          : String(error)
       sendChunk({ content: '', isFinished: true, finishReason: 'error', error: msg })
     } finally {
       if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.end()

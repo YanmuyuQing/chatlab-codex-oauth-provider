@@ -138,7 +138,7 @@ interface ProviderDefinition {
   website?: string
   consoleUrl?: string
   defaultBaseUrl: string
-  authMode: 'api-key'
+  authMode: 'api-key' | 'external-cli'
   supportsCustomModels: boolean
   builtin: boolean
   enabledByDefault: boolean

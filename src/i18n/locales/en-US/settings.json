@@ -159,6 +159,7 @@
       "unnamedConfig": "Unnamed Configuration",
       "visitWebsite": "Visit Website",
       "getApiKey": "Get API Key",
+      "codexCliHint": "Codex CLI Provider does not require an API key. Run codex in a terminal and sign in with ChatGPT first. ChatLab does not read Codex MCP configuration or convert internal tools to MCP.",
       "presetService": "Preset",
       "thirdPartyService": "Third-party",
       "customModelInput": "Enter model manually",
