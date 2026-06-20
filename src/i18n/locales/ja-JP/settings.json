@@ -159,6 +159,7 @@
       "unnamedConfig": "名称未設定",
       "visitWebsite": "公式サイト",
       "getApiKey": "APIキーを取得",
+      "codexCliHint": "Codex CLI Provider に APIキーは不要です。先にターミナルで codex を実行し、ChatGPT にログインしてください。ChatLab は Codex の MCP 設定を読み取らず、内部ツールを MCP に変換しません。",
       "presetService": "プリセット",
       "thirdPartyService": "サードパーティ",
       "customModelInput": "モデルを手動入力",

@@ -159,6 +159,7 @@
       "unnamedConfig": "未命名設定",
       "visitWebsite": "訪問官網",
       "getApiKey": "取得 API Key",
+      "codexCliHint": "Codex CLI Provider 不需要 API Key，請先在終端執行 codex 並完成 ChatGPT 登入。ChatLab 不讀取 Codex MCP 設定，也不會把內部工具自動轉換為 MCP。",
       "presetService": "預設服務",
       "thirdPartyService": "第三方服務",
       "customModelInput": "手動輸入模型",

@@ -172,6 +172,30 @@ export type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
 export { runSimpleLlmStream } from './llm-stream'
 export type { LlmStreamChunk, RunSimpleLlmStreamOptions } from './llm-stream'
 
+// Codex CLI provider
+export {
+  CODEX_CLI_CONTEXT_WINDOW,
+  CODEX_CLI_PROVIDER_ID,
+  DEFAULT_CODEX_CLI_TIMEOUT_MS,
+  CodexCliError,
+  buildCodexCliPrompt,
+  createCodexCliCompressionAdapter,
+  filterCodexCliEnvironment,
+  findCodexCliCommand,
+  formatCodexCliError,
+  getCodexCliToolFallback,
+  isCodexCliProvider,
+  runCodexCli,
+  sanitizeCodexCliStderr,
+  validateCodexCli,
+} from './codex-cli'
+export type {
+  CodexCliErrorCode,
+  CodexCliMessage,
+  CreateCodexCliCompressionAdapterOptions,
+  RunCodexCliOptions,
+} from './codex-cli'
+
 // Re-exports from @earendil-works/pi-ai
 export { Type, completeSimple, streamSimple } from '@earendil-works/pi-ai'
 export type {

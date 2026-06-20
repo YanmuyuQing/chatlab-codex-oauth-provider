@@ -40,6 +40,7 @@ const {
   officialProviders,
   customProviders,
   currentProviderDef,
+  isCodexCli,
   isLocalMode,
   isOpenAICompat,
   isPresetMode,
@@ -170,10 +171,22 @@ function closeModal() {
                 </div>
               </div>
 
+              <div
+                v-if="isCodexCli"
+                class="rounded-lg border border-primary-100 bg-primary-50/60 px-3 py-2 text-xs text-primary-700 dark:border-primary-900/40 dark:bg-primary-950/20 dark:text-primary-300"
+              >
+                {{ t('settings.aiConfig.modal.codexCliHint') }}
+              </div>
+
               <!-- API Key -->
               <ApiKeyInput
+                v-if="!isCodexCli"
                 v-model="formData.apiKey"
-                :placeholder="mode === 'edit' && config?.apiKeySet ? t('settings.aiConfig.modal.apiKeyPlaceholderEdit') : t('settings.aiConfig.modal.apiKeyPlaceholder')"
+                :placeholder="
+                  mode === 'edit' && config?.apiKeySet
+                    ? t('settings.aiConfig.modal.apiKeyPlaceholderEdit')
+                    : t('settings.aiConfig.modal.apiKeyPlaceholder')
+                "
                 :validate-loading="isValidating"
                 :validate-disabled="!formData.apiKey && !canReuseStoredKey"
                 :validate-text="t('settings.aiConfig.modal.validate')"
@@ -183,7 +196,7 @@ function closeModal() {
               />
 
               <!-- API 端点（官方 Provider 自定义 URL） -->
-              <div>
+              <div v-if="!isCodexCli">
                 <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
                   {{ t('settings.aiConfig.modal.apiEndpoint') }}
                 </label>
@@ -403,7 +416,11 @@ function closeModal() {
               <!-- API Key -->
               <ApiKeyInput
                 v-model="formData.apiKey"
-                :placeholder="mode === 'edit' && config?.apiKeySet ? t('settings.aiConfig.modal.apiKeyPlaceholderEdit') : t('settings.aiConfig.modal.apiKeyPlaceholder')"
+                :placeholder="
+                  mode === 'edit' && config?.apiKeySet
+                    ? t('settings.aiConfig.modal.apiKeyPlaceholderEdit')
+                    : t('settings.aiConfig.modal.apiKeyPlaceholder')
+                "
                 :validate-loading="isValidating"
                 :validate-disabled="(!formData.apiKey && !canReuseStoredKey) || !formData.baseUrl"
                 :validate-text="t('settings.aiConfig.modal.validate')"
@@ -526,7 +543,6 @@ function closeModal() {
                 />
               </div>
             </template>
-
           </div>
         </div>
 

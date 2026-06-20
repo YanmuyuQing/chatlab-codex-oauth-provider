@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import type { HttpRouteContext } from '../../context'
-import { summaryService, buildPiModel } from '@openchatlab/node-runtime'
+import { summaryService, buildPiModel, isCodexCliProvider, runCodexCli } from '@openchatlab/node-runtime'
 import type { SummaryServiceDeps, LlmConfig, PiModelConfig } from '@openchatlab/node-runtime'
 
 function createSummaryDeps(ctx: HttpRouteContext): SummaryServiceDeps | null {
@@ -14,6 +14,15 @@ function createSummaryDeps(ctx: HttpRouteContext): SummaryServiceDeps | null {
     },
     buildPiModel(config: LlmConfig) {
       return buildPiModel(config as unknown as PiModelConfig)
+    },
+    async llmComplete(config, systemPrompt, userPrompt) {
+      if (!isCodexCliProvider(config.provider)) return null
+      return runCodexCli({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      })
     },
   }
 }

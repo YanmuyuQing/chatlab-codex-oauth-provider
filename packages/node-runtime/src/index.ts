@@ -336,6 +336,31 @@ export type { TempDbMeta, ExportedSession } from './merger/temp-db'
 export type { AgentTool, AgentToolResult } from './ai'
 export { Type, completeSimple, streamSimple, runSimpleLlmStream } from './ai'
 export type { LlmStreamChunk, RunSimpleLlmStreamOptions } from './ai'
+
+// Codex CLI provider
+export {
+  CODEX_CLI_CONTEXT_WINDOW,
+  CODEX_CLI_PROVIDER_ID,
+  DEFAULT_CODEX_CLI_TIMEOUT_MS,
+  CodexCliError,
+  buildCodexCliPrompt,
+  createCodexCliCompressionAdapter,
+  filterCodexCliEnvironment,
+  findCodexCliCommand,
+  formatCodexCliError,
+  getCodexCliToolFallback,
+  isCodexCliProvider,
+  runCodexCli,
+  sanitizeCodexCliStderr,
+  validateCodexCli,
+} from './ai'
+export type {
+  CodexCliErrorCode,
+  CodexCliMessage,
+  CreateCodexCliCompressionAdapterOptions,
+  RunCodexCliOptions,
+} from './ai'
+
 export type { PiModel, PiApi, PiMessage, PiUsage, PiTextContent, PiAssistantMessage } from './ai'
 
 // ==================== RAG ====================

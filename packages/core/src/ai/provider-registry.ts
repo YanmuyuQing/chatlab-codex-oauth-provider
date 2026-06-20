@@ -260,6 +260,19 @@ const OPENAI_COMPATIBLE: ProviderDefinition = {
   modelIds: [],
 }
 
+const CODEX_CLI: ProviderDefinition = {
+  id: 'codex-cli',
+  name: 'Codex CLI',
+  kind: 'official',
+  website: 'https://developers.openai.com/codex/cli',
+  defaultBaseUrl: '',
+  authMode: 'external-cli',
+  supportsCustomModels: false,
+  builtin: true,
+  enabledByDefault: true,
+  modelIds: ['codex-cli'],
+}
+
 // ==================== 内置目录导出 ====================
 
 export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
@@ -276,6 +289,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   OPENROUTER,
   XAI,
   MINIMAX,
+  CODEX_CLI,
   OPENAI_COMPATIBLE,
 ]
 

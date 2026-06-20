@@ -16,12 +16,18 @@ import {
   checkAndCompress,
   buildSystemPrompt,
   createAiTranslate,
+  createCodexCliCompressionAdapter,
   createCompressionLlmAdapter,
+  CodexCliError,
   AgentEventHandler,
   formatAIError,
+  formatCodexCliError,
+  getCodexCliToolFallback,
+  isCodexCliProvider,
   shouldUseChartCapabilityForMessage,
   getChartPlannerCapabilityForMessage,
   initTokenizer,
+  manualCompress,
   type AgentStreamChunk,
   type PiMessage,
   type SimpleHistoryMessage,
@@ -31,6 +37,7 @@ import {
   type DataSnapshot,
   type OwnerInfo,
   type MentionedMember,
+  runCodexCli,
 } from '@openchatlab/node-runtime'
 import type { ChartAutoMode } from '@openchatlab/shared-types'
 
@@ -47,7 +54,7 @@ export interface RunAgentOptions {
   locale?: string
   assistantSystemPrompt?: string
   skillMenu?: string | null
-  skillDef?: { name: string; prompt: string }
+  skillDef?: { name: string; prompt: string; tools?: string[] }
   compressionConfig?: CompressionConfig
   tools?: AgentTool[]
   aiDataDir: string
@@ -96,7 +103,6 @@ export async function runServerAgent(options: RunAgentOptions): Promise<void> {
     return
   }
 
-  const piModel = buildPiModel(llmConfig)
   const t = createAiTranslate(locale)
 
   let skillCtx: { skillDef?: { name: string; prompt: string }; skillMenu?: string } | undefined
@@ -122,6 +128,122 @@ export async function runServerAgent(options: RunAgentOptions): Promise<void> {
     context: {},
     systemPrompt,
   })
+
+  if (isCodexCliProvider(llmConfig.provider)) {
+    const codexCompressionAdapter = createCodexCliCompressionAdapter({
+      abortSignal,
+      onCompressing: () => handler.emitStatus('compressing', []),
+      onError: (error) =>
+        aiLogger?.warn?.('Compression', 'Codex CLI compression attempt failed', { error: String(error) }),
+    })
+    const emitCompressionResult = (compressionResult: Awaited<ReturnType<typeof checkAndCompress>>) => {
+      if (!compressionResult.compressed) return
+      onEvent({
+        type: 'compression_done',
+        compressionResult: {
+          summaryContent: compressionResult.summaryContent ?? '',
+          tokensBefore: compressionResult.tokensBefore ?? 0,
+          tokensAfter: compressionResult.tokensAfter ?? 0,
+          timestamp: Date.now(),
+        },
+      })
+    }
+
+    if (compressionConfig?.enabled && historyLeafMessageId === undefined) {
+      const compressionResult = await checkAndCompress(
+        aiChatId,
+        compressionConfig,
+        systemPrompt,
+        codexCompressionAdapter,
+        aiChatManager,
+        aiLogger ?? undefined
+      )
+      emitCompressionResult(compressionResult)
+    }
+
+    const toolFallback = getCodexCliToolFallback({
+      userMessage,
+      requestedToolNames: skillDef?.tools,
+      locale,
+    })
+    if (toolFallback) {
+      onEvent({ type: 'content', content: toolFallback })
+      handler.emitStatus('completed', [], { force: true })
+      onEvent({ type: 'done', isFinished: true, usage: handler.cloneUsage() })
+      return
+    }
+
+    let history: SimpleHistoryMessage[] = []
+    const loadHistory = () => {
+      try {
+        return aiChatManager.getHistoryForAgent(aiChatId, undefined, historyLeafMessageId)
+      } catch {
+        return []
+      }
+    }
+    const requestCodex = () =>
+      runCodexCli({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...history.map((message) => ({
+            role: message.role === 'summary' ? 'assistant' : message.role,
+            content: message.content,
+          })),
+          { role: 'user', content: userMessage },
+        ],
+        abortSignal,
+      })
+
+    history = loadHistory()
+
+    try {
+      let content: string
+      try {
+        content = await requestCodex()
+      } catch (error) {
+        if (
+          !(error instanceof CodexCliError) ||
+          error.code !== 'CONTEXT_TOO_LONG' ||
+          !compressionConfig?.enabled ||
+          historyLeafMessageId !== undefined
+        ) {
+          throw error
+        }
+
+        const compressionResult = await manualCompress(
+          aiChatId,
+          compressionConfig,
+          systemPrompt,
+          codexCompressionAdapter,
+          aiChatManager,
+          aiLogger ?? undefined
+        )
+        emitCompressionResult(compressionResult)
+        history = loadHistory()
+        content = await requestCodex()
+      }
+
+      if (abortSignal?.aborted) {
+        handler.emitStatus('aborted', [], { force: true })
+      } else {
+        onEvent({ type: 'content', content })
+        handler.emitStatus('completed', [], { force: true })
+      }
+      onEvent({ type: 'done', isFinished: true, usage: handler.cloneUsage() })
+    } catch (error) {
+      if (abortSignal?.aborted) {
+        handler.emitStatus('aborted', [], { force: true })
+        onEvent({ type: 'done', isFinished: true, usage: handler.cloneUsage() })
+        return
+      }
+      handler.emitStatus('error', [], { force: true })
+      onEvent({ type: 'error', error: { name: 'CodexCliError', message: formatCodexCliError(error, locale) } })
+      onEvent({ type: 'done', isFinished: true, usage: handler.cloneUsage() })
+    }
+    return
+  }
+
+  const piModel = buildPiModel(llmConfig)
 
   if (compressionConfig?.enabled && historyLeafMessageId === undefined) {
     const llmAdapter = createCompressionLlmAdapter({

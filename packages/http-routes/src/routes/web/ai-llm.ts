@@ -4,8 +4,11 @@ import { BUILTIN_PROVIDERS, BUILTIN_MODELS, getBuiltinModelsByProvider } from '@
 import {
   validateApiKey,
   fetchRemoteModels,
+  formatCodexCliError,
   getDefaultRulesForLocale,
+  isCodexCliProvider,
   mergeRulesForLocale,
+  validateCodexCli,
 } from '@openchatlab/node-runtime'
 
 // ==================== API key display masking ====================
@@ -208,6 +211,15 @@ export function registerAiLlmRoutes(server: FastifyInstance, ctx: HttpRouteConte
     Body: { provider: string; apiKey: string; baseUrl?: string; model?: string; apiFormat?: string; configId?: string }
   }>('/_web/ai/llm/validate-key', async (request) => {
     const { provider, apiKey, baseUrl, model, apiFormat, configId } = request.body
+    if (isCodexCliProvider(provider)) {
+      try {
+        await validateCodexCli()
+        return { success: true }
+      } catch (error) {
+        const locale = String(request.headers['accept-language'] || 'zh-CN')
+        return { success: false, error: formatCodexCliError(error, locale) }
+      }
+    }
     const resolvedKey = apiKey?.trim() ? apiKey : configId ? store.getConfigById(configId)?.apiKey || '' : ''
     return validateApiKey(provider, resolvedKey, baseUrl, model, apiFormat)
   })

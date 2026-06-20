@@ -868,6 +868,24 @@ const MINIMAX_MODELS: ModelDefinition[] = [
   }),
 ]
 
+// ==================== Codex CLI ====================
+
+const CODEX_CLI_MODELS: ModelDefinition[] = [
+  builtin({
+    id: 'codex-cli',
+    providerId: 'codex-cli',
+    name: 'Codex CLI Default',
+    description: 'Local Codex CLI text/reasoning; ChatLab tool calling and vision are not connected',
+    // ChatLab-side maximum budget only. The effective limit still depends on the
+    // Codex CLI, selected model, account entitlement, and server-side limits.
+    // Context-length failures fall back to ChatLab's existing compression path.
+    contextWindow: 1000000,
+    capabilities: ['chat', 'reasoning'],
+    recommendedFor: ['chat'],
+    status: 'stable',
+  }),
+]
+
 // ==================== 汇总导出 ====================
 
 export const BUILTIN_MODELS: ModelDefinition[] = [
@@ -884,6 +902,7 @@ export const BUILTIN_MODELS: ModelDefinition[] = [
   ...OPENROUTER_MODELS,
   ...XAI_MODELS,
   ...MINIMAX_MODELS,
+  ...CODEX_CLI_MODELS,
 ]
 
 /** 按 provider 筛选内置模型 */
