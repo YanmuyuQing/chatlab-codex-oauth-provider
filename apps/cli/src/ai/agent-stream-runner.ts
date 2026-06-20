@@ -83,6 +83,9 @@ export function createCliRunAgentStream(
       ownerInfo,
       mentionedMembers,
       thinkingLevel,
+      timeFilter,
+      maxMessagesLimit,
+      preprocessConfig,
     } = params
 
     const aiDataDir = getAiDir(dbManager)
@@ -129,7 +132,20 @@ export function createCliRunAgentStream(
     const availableToolDefs = getAvailableToolDefs(isChartCapability, allowedToolSet)
 
     const agentTools = db
-      ? adaptToolsForAgent(availableToolDefs, () => ({ db, sessionId, locale }), { maxToolResultTokens })
+      ? adaptToolsForAgent(
+          availableToolDefs,
+          () => ({
+            db,
+            sessionId,
+            locale,
+            timeFilter,
+            maxMessagesLimit,
+            preprocessConfig: preprocessConfig as import('@openchatlab/node-runtime').PreprocessConfig | undefined,
+            ownerPlatformId: ownerInfo?.platformId,
+            abortSignal,
+          }),
+          { maxToolResultTokens }
+        )
       : []
 
     const skillMgr = new SkillManager(aiDataDir)
@@ -201,6 +217,8 @@ export function createCliRunAgentStream(
       ownerInfo,
       mentionedMembers,
       dataSnapshot,
+      hasSelectedChat: Boolean(sessionId),
+      maxMessagesLimit,
       thinkingLevel,
       chartAutoMode: resolvedChartAutoMode,
     })

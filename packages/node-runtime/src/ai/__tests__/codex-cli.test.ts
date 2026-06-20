@@ -6,9 +6,12 @@ import { afterEach, describe, it } from 'node:test'
 import {
   CODEX_CLI_CONTEXT_WINDOW,
   CodexCliError,
+  buildCodexCliChatContext,
   createCodexCliCompressionAdapter,
   filterCodexCliEnvironment,
+  formatCodexCliChatContextError,
   formatCodexCliError,
+  getCodexCliRetryMessageLimit,
   getCodexCliToolFallback,
   runCodexCli,
   sanitizeCodexCliStderr,
@@ -194,13 +197,97 @@ setInterval(() => {}, 1_000)
       getCodexCliToolFallback({
         userMessage: '请生成最近一个月的趋势图',
       }) ?? '',
-      /暂不支持 ChatLab 内部工具调用/
+      /尚未接入 ChatLab 原生图表渲染/
     )
+    assert.equal(getCodexCliToolFallback({ userMessage: '读取聊天记录并综合分析' }), null)
     assert.match(
-      getCodexCliToolFallback({ userMessage: '请执行 SQL 查询聊天记录' }) ?? '',
-      /切换到支持 function calling 的 API Provider/
+      getCodexCliToolFallback({
+        userMessage: '请执行 SQL 查询聊天记录',
+        requestedToolNames: ['execute_sql'],
+      }) ?? '',
+      /不会直接执行 SQL/
     )
     assert.equal(getCodexCliToolFallback({ userMessage: '请解释这段 SQL 的含义' }), null)
+  })
+
+  it('builds ChatLab Context with the selected chat and configured message limit', async () => {
+    let receivedLimit: unknown
+    const context = await buildCodexCliChatContext({
+      hasSelectedChat: true,
+      maxMessagesLimit: 3000,
+      locale: 'zh-CN',
+      dataSnapshot: {
+        name: 'Aaa.小佳宝宝！',
+        totalMessages: 48713,
+        firstMessageTs: 1700000000,
+        lastMessageTs: 1710000000,
+      },
+      tools: [
+        {
+          name: 'get_recent_messages',
+          async execute(_toolCallId, params) {
+            receivedLimit = (params as { limit?: number }).limit
+            return {
+              content: [{ type: 'text', text: 'returned: 2\n\n2024/1/1 我: 你好\n2024/1/1 她: 你好呀' }],
+              details: { total: 48713, returned: 2, timeRange: '全部时间' },
+            }
+          },
+        },
+      ],
+    })
+
+    assert.equal(receivedLimit, 3000)
+    assert.match(context, /当前聊天对象：Aaa\.小佳宝宝！/)
+    assert.match(context, /消息总数：48713/)
+    assert.match(context, /本次消息上限：3000/)
+    assert.match(context, /本次实际发送消息数：2/)
+    assert.match(context, /她: 你好呀/)
+    assert.match(context, /不要声称你无法读取 ChatLab 数据库或聊天记录/)
+  })
+
+  it('reports missing or failed ChatLab chat context clearly', async () => {
+    await assert.rejects(buildCodexCliChatContext({ hasSelectedChat: false, tools: [] }), (error: unknown) =>
+      formatCodexCliChatContextError(error).includes('请先选择或导入聊天记录')
+    )
+
+    await assert.rejects(
+      buildCodexCliChatContext({
+        hasSelectedChat: true,
+        tools: [
+          {
+            name: 'get_recent_messages',
+            async execute() {
+              throw new Error('worker unavailable')
+            },
+          },
+        ],
+      }),
+      (error: unknown) => formatCodexCliChatContextError(error).includes('worker unavailable')
+    )
+  })
+
+  it('caps host-side context reads instead of sending an unbounded database', async () => {
+    let receivedLimit: unknown
+    await buildCodexCliChatContext({
+      hasSelectedChat: true,
+      maxMessagesLimit: 999_999,
+      tools: [
+        {
+          name: 'get_recent_messages',
+          async execute(_toolCallId, params) {
+            receivedLimit = (params as { limit?: number }).limit
+            return {
+              content: [{ type: 'text', text: 'returned: 0' }],
+              details: { total: 999_999, returned: 0 },
+            }
+          },
+        },
+      ],
+    })
+
+    assert.equal(receivedLimit, 50_000)
+    assert.equal(getCodexCliRetryMessageLimit(3000), 1000)
+    assert.equal(getCodexCliRetryMessageLimit(500), 250)
   })
 
   it('uses the Codex ChatLab-side budget for the existing compression pipeline', () => {

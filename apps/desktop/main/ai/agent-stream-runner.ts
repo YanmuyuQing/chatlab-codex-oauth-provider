@@ -11,6 +11,7 @@ import type { AgentStreamRequest } from '@openchatlab/http-routes'
 import type { ChartAutoMode } from '@openchatlab/shared-types'
 import {
   buildSkillMenuWithBuiltinChart,
+  buildCodexCliChatContext,
   CHART_CAPABILITY_ANALYSIS_TOOLS,
   checkAndCompress,
   CodexCliError,
@@ -18,7 +19,9 @@ import {
   createCompressionLlmAdapter,
   createDataSnapshotFromOverview,
   formatAIError,
+  formatCodexCliChatContextError,
   formatCodexCliError,
+  getCodexCliRetryMessageLimit,
   getCodexCliToolFallback,
   getAllowedBuiltinToolsForChartAutoSkill,
   getChartCapabilitySkill,
@@ -31,6 +34,7 @@ import {
 import type { CompressionConfig, CompressionLlmAdapter, AgentRuntimeStatus } from '@openchatlab/node-runtime'
 import { Agent, type AgentStreamChunk, type SkillContext } from './agent'
 import { buildSystemPrompt } from './agent/prompt-builder'
+import { getAllTools } from './tools'
 import type { ToolContext } from './tools/types'
 import { getDefaultAssistantConfig, buildPiModel, findModelDefinition } from './llm'
 import type { AIServiceConfig } from './llm/types'
@@ -291,6 +295,29 @@ export function createElectronRunAgentStream(): (
         return
       }
 
+      const contextTools = getAllTools(context, assistantConfig?.allowedBuiltinTools)
+      const loadChatContext = (messageLimit: number | undefined) =>
+        buildCodexCliChatContext({
+          hasSelectedChat: Boolean(sessionId),
+          tools: contextTools,
+          dataSnapshot,
+          maxMessagesLimit: messageLimit,
+          locale,
+          abortSignal,
+        })
+
+      let chatContext: string
+      try {
+        chatContext = await loadChatContext(params.maxMessagesLimit)
+      } catch (error) {
+        const message = formatCodexCliChatContextError(error, locale)
+        const serializedError = serializeError(new Error(message), activeAIConfig.provider)
+        serializedError.friendlyMessage = message
+        aiLogger.error('AgentStream', `Codex CLI chat context error: ${requestId}`, serializedError)
+        onEvent({ type: 'error', error: serializedError, isFinished: true })
+        return
+      }
+
       let history: Array<{ role: 'user' | 'assistant' | 'summary'; content: string }> = []
       const loadHistory = () => {
         try {
@@ -309,10 +336,11 @@ export function createElectronRunAgentStream(): (
         mentionedMembers as ToolContext['mentionedMembers'],
         dataSnapshot
       )
+      let providerSystemPromptWithChatContext = `${providerSystemPrompt}\n\n${chatContext}`
       const requestCodex = () =>
         runCodexCli({
           messages: [
-            { role: 'system', content: providerSystemPrompt },
+            { role: 'system', content: providerSystemPromptWithChatContext },
             ...history.map((message) => ({
               role: message.role === 'summary' ? 'assistant' : message.role,
               content: message.content,
@@ -332,31 +360,34 @@ export function createElectronRunAgentStream(): (
           if (
             !(error instanceof CodexCliError) ||
             error.code !== 'CONTEXT_TOO_LONG' ||
-            !compressionConfig?.enabled ||
             historyLeafMessageId !== undefined
           ) {
             throw error
           }
 
-          const compressionResult = await manualCompress(
-            aiChatId,
-            compressionConfig as CompressionConfig,
-            providerSystemPrompt,
-            buildCompressionAdapter(activeAIConfig, undefined, abortSignal),
-            getAIChatManager(),
-            compressionLogger
-          )
-          if (compressionResult.compressed && compressionResult.summaryContent) {
-            onEvent({
-              type: 'compression_done',
-              compressionResult: {
-                summaryContent: compressionResult.summaryContent,
-                tokensBefore: compressionResult.tokensBefore ?? 0,
-                tokensAfter: compressionResult.tokensAfter ?? 0,
-                timestamp: Date.now(),
-              },
-            })
+          if (compressionConfig?.enabled) {
+            const compressionResult = await manualCompress(
+              aiChatId,
+              compressionConfig as CompressionConfig,
+              providerSystemPromptWithChatContext,
+              buildCompressionAdapter(activeAIConfig, undefined, abortSignal),
+              getAIChatManager(),
+              compressionLogger
+            )
+            if (compressionResult.compressed && compressionResult.summaryContent) {
+              onEvent({
+                type: 'compression_done',
+                compressionResult: {
+                  summaryContent: compressionResult.summaryContent,
+                  tokensBefore: compressionResult.tokensBefore ?? 0,
+                  tokensAfter: compressionResult.tokensAfter ?? 0,
+                  timestamp: Date.now(),
+                },
+              })
+            }
           }
+          chatContext = await loadChatContext(getCodexCliRetryMessageLimit(params.maxMessagesLimit))
+          providerSystemPromptWithChatContext = `${providerSystemPrompt}\n\n${chatContext}`
           history = loadHistory()
           content = await requestCodex()
         }
