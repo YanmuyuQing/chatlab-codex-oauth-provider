@@ -39,6 +39,12 @@ describe('isReasoningModel', () => {
     assert.equal(isReasoningModel('openai', 'gpt-5.2'), true)
   })
 
+  it('recognizes GPT-6.1 Terra on OpenAI and compatible providers', () => {
+    for (const provider of ['openai', 'openai-compatible']) {
+      assert.equal(isReasoningModel(provider, 'gpt-6.1-terra'), true)
+    }
+  })
+
   it('returns true for self-hosted qwen3 (heuristic)', () => {
     assert.equal(isReasoningModel('openai-compatible', 'qwen3:8b'), true)
   })
@@ -124,6 +130,19 @@ describe('getSupportedThinkingLevels', () => {
       'high',
       'xhigh',
     ])
+  })
+
+  it('offers supported GPT-6.1 Terra levels without minimal or auto', () => {
+    for (const provider of ['openai', 'openai-compatible']) {
+      assert.deepEqual(getSupportedThinkingLevels(provider, 'gpt-6.1-terra'), [
+        'default',
+        'off',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+      ])
+    }
   })
 
   it('returns default+minimal+low+medium+high for gpt-5 base (cannot disable)', () => {
@@ -247,6 +266,22 @@ describe('getThinkingCompat', () => {
     assert.equal(compat.supportsReasoningEffort, true)
     assert.equal(compat.thinkingLevelMap?.off, 'none')
     assert.equal(compat.thinkingLevelMap?.xhigh, 'xhigh')
+  })
+
+  it('maps GPT-6.1 Terra reasoning levels and rejects unsupported efforts', () => {
+    for (const provider of ['openai', 'openai-compatible']) {
+      const compat = getThinkingCompat(provider, 'gpt-6.1-terra')
+      assert.equal(compat.supportsReasoningEffort, true)
+      assert.deepEqual(compat.thinkingLevelMap, {
+        off: 'none',
+        minimal: null,
+        low: 'low',
+        medium: 'medium',
+        high: 'high',
+        xhigh: 'xhigh',
+        auto: null,
+      })
+    }
   })
 
   it('returns supportsReasoningEffort + auto/off mappings for kimi', () => {

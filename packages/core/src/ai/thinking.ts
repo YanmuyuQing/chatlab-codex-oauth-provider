@@ -31,6 +31,7 @@ type ThinkingType =
   | 'gpt5' // OpenAI gpt-5 base: can't disable; minimal/low/medium/high
   | 'gpt5_1' // OpenAI gpt-5.1: off→none supported; off/low/medium/high
   | 'gpt5_2plus' // OpenAI gpt-5.2+: off→none + xhigh; full range
+  | 'gpt6_1_terra' // OpenAI GPT-6.1 Terra: off→none, low through xhigh
   | 'grok' // xAI grok: can't disable; low/high only
   | 'kimi' // Kimi thinking: off/auto/low/medium/high
   | 'doubao' // Doubao seed reasoning: off/auto/high
@@ -50,6 +51,7 @@ const TYPE_LEVELS: Record<ThinkingType, ThinkingLevel[]> = {
   gpt5: ['default', 'minimal', 'low', 'medium', 'high'],
   gpt5_1: ['default', 'off', 'low', 'medium', 'high'],
   gpt5_2plus: ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+  gpt6_1_terra: ['default', 'off', 'low', 'medium', 'high', 'xhigh'],
   grok: ['default', 'low', 'high'],
   kimi: ['default', 'off', 'auto', 'low', 'medium', 'high'],
   doubao: ['default', 'off', 'auto', 'high'],
@@ -85,6 +87,15 @@ const TYPE_LEVEL_MAP: Partial<Record<ThinkingType, Partial<Record<ThinkingLevel,
     medium: 'medium',
     high: 'high',
     xhigh: 'xhigh',
+  },
+  gpt6_1_terra: {
+    off: 'none',
+    minimal: null,
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    xhigh: 'xhigh',
+    auto: null,
   },
   grok: {
     minimal: null,
@@ -152,8 +163,9 @@ function classifyThinkingType(provider: string, modelId: string): ThinkingType {
   // ── DeepSeek V3.x hybrid inference (deepseek-chat, deepseek-v3.x) ──
   if (/deepseek[_-]chat|deepseek[_-]v3/i.test(id)) return 'deepseek_hybrid'
 
-  // ── OpenAI gpt-5.x family ──
+  // ── OpenAI GPT families ──
   if (prov === 'openai' || prov === 'openai-compatible') {
+    if (id === 'gpt-6.1-terra') return 'gpt6_1_terra'
     if (/gpt-5\.[2-9]|gpt-5\.[1-9]\d/.test(id)) return 'gpt5_2plus'
     if (/gpt-5\.1/.test(id)) return 'gpt5_1'
     if (/gpt-5/.test(id)) return 'gpt5'

@@ -17,6 +17,52 @@ const anthropicConfig: AIServiceConfig = {
   updatedAt: 1,
 }
 
+// Unlisted Terra models must omit sampling parameters that otherwise make topic generation fail with HTTP 400.
+for (const { modelId, expectedTemperature } of [
+  { modelId: 'gpt-6.1-terra', expectedTemperature: undefined },
+  { modelId: 'gpt-4o', expectedTemperature: 0.1 },
+]) {
+  test(`topic requests preserve supported sampling for ${modelId} with the default model lookup`, async () => {
+    let request: Record<string, unknown> | undefined
+    const client = createChatTopicModelClient(
+      {
+        ...anthropicConfig,
+        provider: 'openai-compatible',
+        apiFormat: 'openai-responses',
+        model: modelId,
+        baseUrl: 'https://example.invalid/v1',
+      },
+      {
+        completeSimple: (model, context, options) =>
+          completeSimple(model, context, {
+            ...options,
+            onPayload: async (payload, model) => {
+              request = ((await options?.onPayload?.(payload, model)) ?? payload) as Record<string, unknown>
+              throw new Error('Captured topic request before network')
+            },
+          }),
+      }
+    )
+
+    await assert.rejects(
+      () =>
+        client.complete(
+          { systemPrompt: 'Return JSON only.', userPrompt: 'Synthetic messages' },
+          { signal: new AbortController().signal, sessionId: 'synthetic' }
+        ),
+      /Captured topic request before network/
+    )
+    assert.ok(request)
+    assert.equal(request.model, modelId)
+    assert.equal(request.temperature, expectedTemperature)
+    assert.equal(request.max_output_tokens, 4096)
+    if (modelId === 'gpt-6.1-terra') {
+      assert.equal(Object.hasOwn(request, 'temperature'), false)
+      assert.deepEqual(request.reasoning, { effort: 'none' })
+    }
+  })
+}
+
 // Prevent provider-default thinking from consuming the topic result budget, without changing other APIs/models.
 for (const { config, expectedThinking } of [
   { config: anthropicConfig, expectedThinking: { type: 'disabled' } },
