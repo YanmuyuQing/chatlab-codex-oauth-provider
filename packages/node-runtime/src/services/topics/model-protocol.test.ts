@@ -28,17 +28,17 @@ test('operation parser normalizes the op discriminator returned by DeepSeek', ()
   assert.equal(response.operations[0]?.operation, 'create')
 })
 
-test('finalization parser validates topic states', () => {
+test('finalization normalizes canonical state spellings and leaves unknown states absent', () => {
   assert.deepEqual(parseTopicFinalizationResponse('{"overview":"今日概览","topics":[]}'), {
     overview: '今日概览',
     topics: [],
   })
-  assert.throws(
-    () =>
-      parseTopicFinalizationResponse(
-        '{"overview":"今日概览","topics":[{"id":"x","title":"x","summary":"x","state":"unknown"}]}'
-      ),
-    /state/
+  const response = parseTopicFinalizationResponse(
+    '{"overview":"今日概览","topics":[{"id":"x","title":"x","summary":"x","state":" ClOsEd "},{"id":"y","title":"y","summary":"y","state":"unknown"}]}'
+  )
+  assert.deepEqual(
+    response.topics.map(({ state }) => state),
+    ['closed', undefined]
   )
 })
 

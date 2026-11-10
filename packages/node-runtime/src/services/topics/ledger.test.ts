@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyTopicOperations, createEmptyTopicLedger, materializeChatTopics, MAX_TOPICS_PER_DAY } from './ledger'
+import {
+  applyTopicOperations,
+  createEmptyTopicLedger,
+  materializeChatTopics,
+  MAX_TOPICS_PER_DAY,
+  parseTopicLedger,
+} from './ledger'
 import type { TopicSourceMessage } from './source'
 
 const messages: TopicSourceMessage[] = [
@@ -66,33 +72,84 @@ test('runtime derives participants and discontinuous time ranges from cited mess
   ])
 })
 
-test('model operations cannot cite messages outside the current block', () => {
-  assert.throws(
-    () =>
-      applyTopicOperations(
-        createEmptyTopicLedger(),
-        {
-          operations: [
-            {
-              operation: 'create',
-              localId: 'invented',
-              title: '虚构话题',
-              summary: '引用了不存在的消息。',
-              state: 'active',
-              evidence: [{ messageId: 999, timestamp: 100, role: 'primary' }],
-            },
-          ],
-          assignments: [{ topicRef: 'invented', messageIds: [999] }],
-        },
-        {
-          sessionId: 'session',
-          dayKey: '2026-08-09',
-          localIdNamespace: 'block:0',
-          currentMessages: messages,
-        }
-      ),
-    /not in the current block/
-  )
+test('a create with only out-of-block evidence fails strict validation and recovery', () => {
+  for (const discardOutOfBlockReferences of [false, true]) {
+    assert.throws(
+      () =>
+        applyTopicOperations(
+          createEmptyTopicLedger(),
+          {
+            operations: [
+              {
+                operation: 'create',
+                localId: 'invented',
+                title: '虚构话题',
+                summary: '引用了不存在的消息。',
+                state: 'active',
+                evidence: [{ messageId: 999, timestamp: 100, role: 'primary' }],
+              },
+            ],
+            assignments: [{ topicRef: 'invented', messageIds: [1] }],
+          },
+          {
+            sessionId: 'session',
+            dayKey: '2026-08-09',
+            localIdNamespace: 'block:0',
+            currentMessages: messages,
+            discardOutOfBlockReferences,
+          }
+        ),
+      /not in the current block/
+    )
+  }
+})
+
+test('persisted checkpoints still require exact canonical topic states', () => {
+  const checkpoint = JSON.stringify({
+    topics: [{ id: 'topic:1', title: 'Topic', summary: 'Summary', state: ' CLOSED ', evidence: [], messageIds: [] }],
+  })
+  assert.throws(() => parseTopicLedger(checkpoint), /Invalid topic state/)
+})
+
+test('new local IDs cannot shadow ledger topics or use reserved canonical IDs', () => {
+  const ledger = {
+    topics: [
+      {
+        id: 'topic:existing',
+        title: 'Existing',
+        summary: 'Existing',
+        state: 'active' as const,
+        evidence: [],
+        messageIds: [],
+      },
+    ],
+  }
+  for (const [localId, error] of [
+    ['topic:existing', /conflicts with an existing topic/],
+    ['topic:0123456789abcdef01234567', /Invalid local topic id/],
+  ] as const) {
+    assert.throws(
+      () =>
+        applyTopicOperations(
+          ledger,
+          {
+            operations: [
+              {
+                operation: 'create',
+                localId,
+                title: 'New topic',
+                summary: 'Current discussion.',
+                state: 'active',
+                evidence: [{ messageId: 1, timestamp: 100, role: 'primary' }],
+              },
+            ],
+            assignments: [{ topicRef: localId, messageIds: [1] }],
+          },
+          { sessionId: 'session', dayKey: '2026-08-09', localIdNamespace: 'block:0', currentMessages: messages }
+        ),
+      error
+    )
+  }
 })
 
 test('create local ids are isolated between source blocks', () => {

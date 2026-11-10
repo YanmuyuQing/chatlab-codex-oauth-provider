@@ -40,7 +40,7 @@ export type TopicModelOperation =
       sourceTopicIds: string[]
       title: string
       summary: string
-      state: 'active' | 'closed'
+      state?: 'active' | 'closed'
       evidence: ChatTopicEvidence[]
     }
   | {
@@ -61,13 +61,19 @@ export interface TopicModelBlockResponse {
   assignments: TopicMessageAssignment[]
 }
 
+export class TopicBlockReferenceError extends Error {
+  constructor(kind: 'Evidence' | 'Assigned', messageId: number) {
+    super(`${kind} message is not in the current block: ${messageId}`)
+  }
+}
+
 export interface TopicFinalization {
   overview: string
   topics: Array<{
     id: string
     title: string
     summary: string
-    state: 'active' | 'closed'
+    state?: 'active' | 'closed'
   }>
 }
 
@@ -83,6 +89,7 @@ export function applyTopicOperations(
     dayKey: string
     localIdNamespace: string
     currentMessages: TopicSourceMessage[]
+    discardOutOfBlockReferences?: boolean
   }
 ): TopicLedger {
   assertTopicLedgerSize(ledger)
@@ -95,13 +102,21 @@ export function applyTopicOperations(
   const evidenceMembershipFallbacks: Array<{ evidence: ChatTopicEvidence[]; topicId: string }> = []
 
   for (const operation of response.operations) {
-    validateNewEvidence(operation.evidence, currentMessageIds)
-    const evidence = operation.evidence.map((item) => ({
+    const currentEvidence = context.discardOutOfBlockReferences
+      ? operation.evidence.filter((item) => currentMessageIds.has(item.messageId))
+      : operation.evidence
+    // An operation that cited evidence still needs a current message to ground it.
+    validateNewEvidence(currentEvidence.length > 0 ? currentEvidence : operation.evidence, currentMessageIds)
+    const evidence = currentEvidence.map((item) => ({
       ...item,
       timestamp: currentMessagesById.get(item.messageId)!.timestamp,
     }))
     if (operation.operation === 'create') {
       if (evidence.length === 0) throw new Error('A new topic must cite at least one current message')
+      // Assignment lookup gives local IDs precedence, so they cannot shadow a ledger ID.
+      if (ledger.topics.some((topic) => topic.id === operation.localId)) {
+        throw new Error(`Local topic id conflicts with an existing topic: ${operation.localId}`)
+      }
       const id = createCanonicalTopicId(context.sessionId, context.dayKey, context.localIdNamespace, operation.localId)
       if (next.topics.some((topic) => topic.id === id)) throw new Error(`Topic already exists: ${id}`)
       if (localTopicIds.has(operation.localId)) throw new Error(`Duplicate local topic id: ${operation.localId}`)
@@ -125,7 +140,7 @@ export function applyTopicOperations(
       const sources = sourceIds.map((id) => requireLedgerTopic(next, id))
       target.title = operation.title
       target.summary = operation.summary
-      target.state = operation.state
+      target.state = operation.state ?? target.state
       target.evidence = deduplicateEvidence([
         ...target.evidence,
         ...sources.flatMap((topic) => topic.evidence),
@@ -149,7 +164,12 @@ export function applyTopicOperations(
 
   for (const assignment of response.assignments) {
     const topicId = resolveTopicRef(assignment.topicRef)
-    for (const messageId of assignment.messageIds) assignMessage(messageId, topicId)
+    const currentIds = context.discardOutOfBlockReferences
+      ? assignment.messageIds.filter((messageId) => currentMessageIds.has(messageId))
+      : assignment.messageIds
+    for (const messageId of currentIds.length > 0 ? currentIds : assignment.messageIds) {
+      assignMessage(messageId, topicId)
+    }
   }
 
   // assignments define primary membership. Evidence only fills omissions and never overrides
@@ -189,7 +209,7 @@ export function applyTopicOperations(
 
   function assignMessage(messageId: number, topicId: string): void {
     if (!Number.isInteger(messageId) || !currentMessageIds.has(messageId)) {
-      throw new Error(`Assigned message is not in the current block: ${messageId}`)
+      throw new TopicBlockReferenceError('Assigned', messageId)
     }
     const resolvedTopicId = followMergedTopicId(topicId)
     // Keep the first explicit assignment (or evidence fallback) deterministically when the
@@ -210,7 +230,7 @@ export function applyTopicFinalization(ledger: TopicLedger, finalization: TopicF
     if (!update) continue
     topic.title = update.title
     topic.summary = update.summary
-    topic.state = update.state
+    topic.state = update.state ?? topic.state
   }
   return next
 }
@@ -271,9 +291,12 @@ function assertTopicLedgerSize(ledger: TopicLedger): void {
 }
 
 function createCanonicalTopicId(sessionId: string, dayKey: string, localIdNamespace: string, localId: string): string {
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(localId)) throw new Error(`Invalid local topic id: ${localId}`)
+  const slug = localId.replace(/^topic:/, '')
+  if (localId.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(slug) || /^topic:[0-9a-f]{24}$/i.test(localId)) {
+    throw new Error(`Invalid local topic id: ${localId}`)
+  }
   return `topic:${createHash('sha256')
-    .update(`${sessionId}\u0000${dayKey}\u0000${localIdNamespace}\u0000${localId}`)
+    .update(`${sessionId}\u0000${dayKey}\u0000${localIdNamespace}\u0000${slug}`)
     .digest('hex')
     .slice(0, 24)}`
 }
@@ -294,7 +317,7 @@ function buildTopicTimeRanges(messages: TopicSourceMessage[]): ChatTopic['timeRa
 function validateNewEvidence(evidence: ChatTopicEvidence[], currentMessageIds: Set<number>): void {
   for (const item of evidence) {
     if (!currentMessageIds.has(item.messageId)) {
-      throw new Error(`Evidence message is not in the current block: ${item.messageId}`)
+      throw new TopicBlockReferenceError('Evidence', item.messageId)
     }
   }
 }
