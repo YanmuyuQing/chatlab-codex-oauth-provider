@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyTopicOperations, createEmptyTopicLedger, materializeChatTopics, MAX_TOPICS_PER_DAY } from './ledger'
+import {
+  applyTopicOperations,
+  createEmptyTopicLedger,
+  materializeChatTopics,
+  MAX_TOPICS_PER_DAY,
+  parseTopicLedger,
+} from './ledger'
 import type { TopicSourceMessage } from './source'
 
 const messages: TopicSourceMessage[] = [
@@ -96,6 +102,13 @@ test('a create with only out-of-block evidence fails strict validation and recov
       /not in the current block/
     )
   }
+})
+
+test('persisted checkpoints still require exact canonical topic states', () => {
+  const checkpoint = JSON.stringify({
+    topics: [{ id: 'topic:1', title: 'Topic', summary: 'Summary', state: ' CLOSED ', evidence: [], messageIds: [] }],
+  })
+  assert.throws(() => parseTopicLedger(checkpoint), /Invalid topic state/)
 })
 
 test('new local IDs cannot shadow ledger topics or use reserved canonical IDs', () => {

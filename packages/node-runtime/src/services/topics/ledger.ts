@@ -40,7 +40,7 @@ export type TopicModelOperation =
       sourceTopicIds: string[]
       title: string
       summary: string
-      state: 'active' | 'closed'
+      state?: 'active' | 'closed'
       evidence: ChatTopicEvidence[]
     }
   | {
@@ -73,7 +73,7 @@ export interface TopicFinalization {
     id: string
     title: string
     summary: string
-    state: 'active' | 'closed'
+    state?: 'active' | 'closed'
   }>
 }
 
@@ -140,7 +140,7 @@ export function applyTopicOperations(
       const sources = sourceIds.map((id) => requireLedgerTopic(next, id))
       target.title = operation.title
       target.summary = operation.summary
-      target.state = operation.state
+      target.state = operation.state ?? target.state
       target.evidence = deduplicateEvidence([
         ...target.evidence,
         ...sources.flatMap((topic) => topic.evidence),
@@ -230,7 +230,7 @@ export function applyTopicFinalization(ledger: TopicLedger, finalization: TopicF
     if (!update) continue
     topic.title = update.title
     topic.summary = update.summary
-    topic.state = update.state
+    topic.state = update.state ?? topic.state
   }
   return next
 }

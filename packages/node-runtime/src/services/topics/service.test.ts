@@ -390,6 +390,76 @@ test('a forward message reference can be discarded after retry without losing th
   }
 })
 
+test('unrecognized model states preserve topic lifecycle and allow the day to finish', async () => {
+  const samples = [
+    { localId: 'closed-topic', state: ' CLOSED ' },
+    { localId: 'default-topic', state: 'unknown' },
+    { localId: 'merged-topic' },
+  ]
+  const response = (value: object) => ({ text: JSON.stringify(value), inputTokens: 1, outputTokens: 1 })
+  const modelClient: ChatTopicModelClient = {
+    modelId: 'test/model',
+    async complete({ userPrompt }) {
+      if (userPrompt.includes('Block: 1/2')) {
+        return response({
+          operations: samples.map((sample, index) => ({
+            ...sample,
+            operation: 'create',
+            title: sample.localId,
+            summary: 'Discussion.',
+            evidence: [{ messageId: index + 1, timestamp: 0, role: 'primary' }],
+          })),
+          assignments: samples.map(({ localId }, index) => ({ topicRef: localId, messageIds: [index + 1] })),
+        })
+      }
+      const topicIds = [...new Set(userPrompt.match(/topic:[0-9a-f]{24}/g))]
+      if (userPrompt.includes('Block: 2/2')) {
+        assert.equal(topicIds.length, 3)
+        return response({
+          operations: [
+            {
+              operation: 'merge',
+              targetTopicId: topicIds[0],
+              sourceTopicIds: [topicIds[2]],
+              title: 'Merged discussion',
+              summary: 'Two threads were about the same subject.',
+              state: 'unrecognized',
+              evidence: [{ messageId: 160, timestamp: 0, role: 'supporting' }],
+            },
+          ],
+          assignments: [{ topicRef: topicIds[0], messageIds: [160] }],
+        })
+      }
+      assert.equal(topicIds.length, 2)
+      return response({
+        overview: 'Day complete.',
+        topics: [
+          { id: topicIds[0], title: 'Closed', summary: 'Concluded.', state: 'unknown' },
+          { id: topicIds[1], title: 'Open', summary: 'Ongoing.' },
+        ],
+      })
+    },
+  }
+  const { service, manager } = createHarness(modelClient, 161)
+
+  try {
+    const run = service.generateDay('group', '2026-08-09', 'Asia/Shanghai')
+    const completed = await waitForRun(service, 'group', run.id, 'completed')
+    assert.equal(completed.modelCalls, 3)
+    const day = service.getDay('group', '2026-08-09', 'Asia/Shanghai')
+    assert.deepEqual(
+      day?.topics.map(({ state, messageIds }) => ({ state, messageIds })),
+      [
+        { state: 'closed', messageIds: [1, 3, 160] },
+        { state: 'active', messageIds: [2] },
+      ]
+    )
+  } finally {
+    service.close()
+    manager.closeAll()
+  }
+})
+
 test('private conversations use the shared topic runtime with private-chat analysis guidance', async () => {
   let calls = 0
   const modelClient: ChatTopicModelClient = {

@@ -3,7 +3,6 @@ import {
   isRecord,
   MAX_TOPICS_PER_DAY,
   parseEvidence,
-  requireState,
   requireString,
   type TopicFinalization,
   type TopicLedger,
@@ -54,6 +53,7 @@ ${formatBlockMessages(input.block, input.timezone)}
 Return a JSON object with "operations" and "assignments" arrays. Every operation object MUST use the exact discriminator field "operation"; never use "op", "action", or another alias.
 For create use operation, localId, title, summary, state, and evidence. Use a short plain slug such as t1 for localId. Reserve the topic: prefix for existing topic IDs. Cite at least one current message.
 For append use operation, topicId, optional title, summary, evidence. For merge use operation, targetTopicId, sourceTopicIds, title, summary, state, evidence. For close/reopen use operation, topicId, optional title/summary, evidence. Every evidence item must include messageId, timestamp exactly as supplied, and role.
+For create and merge, state must be the exact English string "active" or "closed".
 Each assignment has topicRef and messageIds. The topicRef MUST be the localId of a topic created in this block or the exact id of an existing ledger topic. Group all message IDs for the same topic into one assignment. Assignment messageIds must come from this block only. Return assignments:[] only when no message belongs to a meaningful topic.`,
   }
 }
@@ -75,7 +75,7 @@ Timezone: ${input.timezone}
 Ledger:
 ${formatLedgerForModel(input.ledger)}
 
-Return {"overview":"...","topics":[{"id":"existing id","title":"...","summary":"...","state":"active|closed"}]}. Include each existing topic exactly once. The overview must clearly distinguish plans, unresolved questions, and confirmed events.`,
+Return {"overview":"...","topics":[{"id":"existing id","title":"...","summary":"...","state":"active"}]}. Use the exact English state string "active" or "closed" for each topic. Include each existing topic exactly once. The overview must clearly distinguish plans, unresolved questions, and confirmed events.`,
   }
 }
 
@@ -107,7 +107,7 @@ export function parseTopicFinalizationResponse(text: string): TopicFinalization 
         id: requireString(value.id, 'id', 200),
         title: requireString(value.title, 'title', 200),
         summary: requireString(value.summary, 'summary', 1_000),
-        state: requireState(value.state),
+        state: parseModelState(value.state),
       }
     }),
   }
@@ -125,7 +125,7 @@ function parseOperation(value: unknown): TopicModelOperation {
       localId: requireString(value.localId, 'localId', 64),
       title: requireString(value.title, 'title', 200),
       summary: requireString(value.summary, 'summary', 1_000),
-      state: requireState(value.state),
+      state: parseModelState(value.state) ?? 'active',
       evidence,
     }
   }
@@ -148,7 +148,7 @@ function parseOperation(value: unknown): TopicModelOperation {
       sourceTopicIds: value.sourceTopicIds.map((id) => requireString(id, 'sourceTopicId', 200)),
       title: requireString(value.title, 'title', 200),
       summary: requireString(value.summary, 'summary', 1_000),
-      state: requireState(value.state),
+      state: parseModelState(value.state),
       evidence,
     }
   }
@@ -162,6 +162,12 @@ function parseOperation(value: unknown): TopicModelOperation {
     }
   }
   throw new Error(`Unsupported topic operation: ${String(operation)}`)
+}
+
+function parseModelState(value: unknown): 'active' | 'closed' | undefined {
+  if (typeof value !== 'string') return undefined
+  const state = value.trim().toLowerCase()
+  return state === 'active' || state === 'closed' ? state : undefined
 }
 
 function parseEvidenceArray(value: unknown): ChatTopicEvidence[] {
