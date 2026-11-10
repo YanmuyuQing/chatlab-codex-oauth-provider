@@ -12,6 +12,7 @@ import {
   materializeChatTopics,
   parseTopicLedger,
   serializeTopicLedger,
+  TopicBlockReferenceError,
   type TopicLedger,
 } from './ledger'
 import type { ChatTopicModelClient, ChatTopicModelResult } from './model-client'
@@ -456,14 +457,16 @@ export function createChatTopicService(deps: ChatTopicServiceDeps): ChatTopicSer
         modelClient,
         prompts,
         signal,
-        (text) =>
+        (text, discardOutOfBlockReferences) =>
           applyTopicOperations(ledger, parseTopicOperationsResponse(text), {
             sessionId: run.sessionId,
             dayKey: source.dayKey,
             localIdNamespace: `block:${block.index}`,
             currentMessages: block.messages,
+            discardOutOfBlockReferences,
           }),
-        `chat-topics:${run.sessionId}:${source.dayKey}`
+        `chat-topics:${run.sessionId}:${source.dayKey}`,
+        block.messages.map((message) => message.id)
       )
       run = result.run
       ledger = result.value
@@ -528,18 +531,23 @@ export function createChatTopicService(deps: ChatTopicServiceDeps): ChatTopicSer
     modelClient: ChatTopicModelClient,
     prompts: { systemPrompt: string; userPrompt: string },
     signal: AbortSignal,
-    validate: (text: string) => T,
-    sessionId: string
+    validate: (text: string, discardOutOfBlockReferences: boolean) => T,
+    sessionId: string,
+    currentMessageIds?: number[]
   ): Promise<{ run: ChatTopicRun; value: T }> {
     let run = initialRun
     let lastValidationError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const referenceHint =
+        lastValidationError instanceof TopicBlockReferenceError && currentMessageIds
+          ? ` Only use these message IDs for evidence and assignments: ${currentMessageIds.join(', ')}. Remove all other message IDs. Each create operation must cite a current message.`
+          : ''
       const attemptPrompts =
         attempt === 0
           ? prompts
           : {
               ...prompts,
-              userPrompt: `${prompts.userPrompt}\n\nYour previous response was invalid: ${validationErrorMessage(lastValidationError)}. Return corrected compact JSON only. Stay below 4096 output tokens, keep at most 4 representative evidence items per operation, and include the complete assignments array with current-block message IDs.`,
+              userPrompt: `${prompts.userPrompt}\n\nYour previous response was invalid: ${validationErrorMessage(lastValidationError)}.${referenceHint} Return corrected compact JSON only. Stay below 4096 output tokens, keep at most 4 representative evidence items per operation, and include the complete assignments array with current-block message IDs.`,
             }
       const response = await modelClient.complete(attemptPrompts, { signal, sessionId })
       run = recordModelUsage(run, response)
@@ -550,8 +558,16 @@ export function createChatTopicService(deps: ChatTopicServiceDeps): ChatTopicSer
         )
       }
       try {
-        return { run, value: validate(response.text) }
+        return { run, value: validate(response.text, false) }
       } catch (error) {
+        if (attempt === 1 && error instanceof TopicBlockReferenceError && currentMessageIds) {
+          const value = validate(response.text, true)
+          appLogger.warn('chat-topics', 'Recovered out-of-block topic references after retry', {
+            runId: run.id,
+            blockIndex: run.currentBlockIndex,
+          })
+          return { run, value }
+        }
         lastValidationError = error
       }
     }

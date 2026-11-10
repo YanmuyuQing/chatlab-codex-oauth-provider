@@ -66,33 +66,36 @@ test('runtime derives participants and discontinuous time ranges from cited mess
   ])
 })
 
-test('model operations cannot cite messages outside the current block', () => {
-  assert.throws(
-    () =>
-      applyTopicOperations(
-        createEmptyTopicLedger(),
-        {
-          operations: [
-            {
-              operation: 'create',
-              localId: 'invented',
-              title: '虚构话题',
-              summary: '引用了不存在的消息。',
-              state: 'active',
-              evidence: [{ messageId: 999, timestamp: 100, role: 'primary' }],
-            },
-          ],
-          assignments: [{ topicRef: 'invented', messageIds: [999] }],
-        },
-        {
-          sessionId: 'session',
-          dayKey: '2026-08-09',
-          localIdNamespace: 'block:0',
-          currentMessages: messages,
-        }
-      ),
-    /not in the current block/
-  )
+test('a create with only out-of-block evidence fails strict validation and recovery', () => {
+  for (const discardOutOfBlockReferences of [false, true]) {
+    assert.throws(
+      () =>
+        applyTopicOperations(
+          createEmptyTopicLedger(),
+          {
+            operations: [
+              {
+                operation: 'create',
+                localId: 'invented',
+                title: '虚构话题',
+                summary: '引用了不存在的消息。',
+                state: 'active',
+                evidence: [{ messageId: 999, timestamp: 100, role: 'primary' }],
+              },
+            ],
+            assignments: [{ topicRef: 'invented', messageIds: [1] }],
+          },
+          {
+            sessionId: 'session',
+            dayKey: '2026-08-09',
+            localIdNamespace: 'block:0',
+            currentMessages: messages,
+            discardOutOfBlockReferences,
+          }
+        ),
+      /not in the current block/
+    )
+  }
 })
 
 test('create local ids are isolated between source blocks', () => {

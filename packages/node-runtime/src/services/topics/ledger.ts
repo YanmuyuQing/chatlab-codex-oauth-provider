@@ -61,6 +61,12 @@ export interface TopicModelBlockResponse {
   assignments: TopicMessageAssignment[]
 }
 
+export class TopicBlockReferenceError extends Error {
+  constructor(kind: 'Evidence' | 'Assigned', messageId: number) {
+    super(`${kind} message is not in the current block: ${messageId}`)
+  }
+}
+
 export interface TopicFinalization {
   overview: string
   topics: Array<{
@@ -83,6 +89,7 @@ export function applyTopicOperations(
     dayKey: string
     localIdNamespace: string
     currentMessages: TopicSourceMessage[]
+    discardOutOfBlockReferences?: boolean
   }
 ): TopicLedger {
   assertTopicLedgerSize(ledger)
@@ -95,8 +102,12 @@ export function applyTopicOperations(
   const evidenceMembershipFallbacks: Array<{ evidence: ChatTopicEvidence[]; topicId: string }> = []
 
   for (const operation of response.operations) {
-    validateNewEvidence(operation.evidence, currentMessageIds)
-    const evidence = operation.evidence.map((item) => ({
+    const currentEvidence = context.discardOutOfBlockReferences
+      ? operation.evidence.filter((item) => currentMessageIds.has(item.messageId))
+      : operation.evidence
+    // An operation that cited evidence still needs a current message to ground it.
+    validateNewEvidence(currentEvidence.length > 0 ? currentEvidence : operation.evidence, currentMessageIds)
+    const evidence = currentEvidence.map((item) => ({
       ...item,
       timestamp: currentMessagesById.get(item.messageId)!.timestamp,
     }))
@@ -149,7 +160,12 @@ export function applyTopicOperations(
 
   for (const assignment of response.assignments) {
     const topicId = resolveTopicRef(assignment.topicRef)
-    for (const messageId of assignment.messageIds) assignMessage(messageId, topicId)
+    const currentIds = context.discardOutOfBlockReferences
+      ? assignment.messageIds.filter((messageId) => currentMessageIds.has(messageId))
+      : assignment.messageIds
+    for (const messageId of currentIds.length > 0 ? currentIds : assignment.messageIds) {
+      assignMessage(messageId, topicId)
+    }
   }
 
   // assignments define primary membership. Evidence only fills omissions and never overrides
@@ -189,7 +205,7 @@ export function applyTopicOperations(
 
   function assignMessage(messageId: number, topicId: string): void {
     if (!Number.isInteger(messageId) || !currentMessageIds.has(messageId)) {
-      throw new Error(`Assigned message is not in the current block: ${messageId}`)
+      throw new TopicBlockReferenceError('Assigned', messageId)
     }
     const resolvedTopicId = followMergedTopicId(topicId)
     // Keep the first explicit assignment (or evidence fallback) deterministically when the
@@ -294,7 +310,7 @@ function buildTopicTimeRanges(messages: TopicSourceMessage[]): ChatTopic['timeRa
 function validateNewEvidence(evidence: ChatTopicEvidence[], currentMessageIds: Set<number>): void {
   for (const item of evidence) {
     if (!currentMessageIds.has(item.messageId)) {
-      throw new Error(`Evidence message is not in the current block: ${item.messageId}`)
+      throw new TopicBlockReferenceError('Evidence', item.messageId)
     }
   }
 }

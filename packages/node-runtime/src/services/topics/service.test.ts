@@ -9,8 +9,11 @@ import { CHAT_DB_SCHEMA } from '@openchatlab/core'
 import { DatabaseManager } from '../../database-manager'
 import { assertDataDirCompatible, DataDirCompatibilityError, readDataDirCompatibilityMeta } from '../../data-dir-compat'
 import { createDatabaseManagerAdapter } from '../adapters'
+import { parseTopicLedger } from './ledger'
 import type { ChatTopicModelClient } from './model-client'
+import { getChatTopicsDbPath } from './paths'
 import { createChatTopicService, type ChatTopicService } from './service'
+import { ChatTopicStore } from './store'
 import { chatTopicWorkCoordinator } from './work-coordinator'
 
 const nativeBinding = path.resolve('apps/cli/native/better_sqlite3.node')
@@ -256,6 +259,119 @@ test('hierarchical topic generation persists validated evidence and marks later 
     db.close()
     assert.equal(service.getDay('group', '2026-08-09', 'Asia/Shanghai')?.status, 'stale')
   } finally {
+    service.close()
+    manager.closeAll()
+  }
+})
+
+test('a forward message reference can be discarded after retry without losing the grounded block', async () => {
+  let blockTwoAttempts = 0
+  let retryPrompt = ''
+  const dayKey = '2026-08-09'
+  const timezone = 'Asia/Shanghai'
+  const forwardId = 43888
+  const response = (value: object) => ({ text: JSON.stringify(value), inputTokens: 1, outputTokens: 1 })
+  const modelClient: ChatTopicModelClient = {
+    modelId: 'test/model',
+    async complete({ userPrompt }) {
+      if (userPrompt.includes('Block: 1/3')) {
+        return response({
+          operations: [
+            {
+              operation: 'create',
+              localId: 'first-topic',
+              title: 'First topic',
+              summary: 'Initial discussion.',
+              state: 'active',
+              evidence: [{ messageId: 1, timestamp: 0, role: 'primary' }],
+            },
+          ],
+          assignments: [{ topicRef: 'first-topic', messageIds: [1] }],
+        })
+      }
+      const topicIds = [...new Set(userPrompt.match(/topic:[0-9a-f]{24}/g))]
+      if (userPrompt.includes('Block: 2/3')) {
+        assert.equal(topicIds.length, 1)
+        assert.match(userPrompt, /"messageId":160,/)
+        if (++blockTwoAttempts === 2) retryPrompt = userPrompt
+        return response({
+          operations: [
+            {
+              operation: 'append',
+              topicId: topicIds[0],
+              summary: 'Discussion continued in the second block.',
+              evidence: [
+                { messageId: forwardId, timestamp: 0, role: 'primary' },
+                { messageId: 160, timestamp: 0, role: 'supporting' },
+              ],
+            },
+          ],
+          assignments: [{ topicRef: topicIds[0], messageIds: [forwardId, 160, 161] }],
+        })
+      }
+      if (userPrompt.includes('Block: 3/3')) {
+        assert.match(userPrompt, new RegExp(`"messageId":${forwardId},`))
+        const checkpoint = checkpointStore.getCheckpoint('group', dayKey)
+        assert.equal(checkpoint?.completedBlockIndex, 2)
+        const ledger = parseTopicLedger(checkpoint!.ledgerJson)
+        assert.deepEqual(ledger.topics[0]?.messageIds, [1, 160, 161])
+        assert.deepEqual(
+          ledger.topics[0]?.evidence.map(({ messageId }) => messageId),
+          [1, 160]
+        )
+        return response({
+          operations: [
+            {
+              operation: 'create',
+              localId: 'later-topic',
+              title: 'Later topic',
+              summary: 'Discussion in the third block.',
+              state: 'active',
+              evidence: [{ messageId: forwardId, timestamp: 0, role: 'primary' }],
+            },
+          ],
+          assignments: [{ topicRef: 'later-topic', messageIds: [forwardId] }],
+        })
+      }
+      return response({
+        overview: 'Both discussions were summarized.',
+        topics: topicIds.map((id) => ({ id, title: 'Discussion', summary: 'Summarized.', state: 'active' })),
+      })
+    },
+  }
+  const { service, manager, root } = createHarness(modelClient, 394)
+  const db = new Database(path.join(root, 'data', 'databases', 'group.db'), { nativeBinding })
+  db.prepare('UPDATE message SET id = ? WHERE id = 394').run(forwardId)
+  db.close()
+  const checkpointStore = new ChatTopicStore(getChatTopicsDbPath(path.join(root, 'data')), { nativeBinding })
+
+  try {
+    const run = service.generateDay('group', dayKey, timezone)
+    const completed = await waitForRun(service, 'group', run.id, 'completed')
+    assert.equal(completed.completedBlocks, 3)
+    assert.equal(completed.modelCalls, 5)
+    assert.equal(blockTwoAttempts, 2)
+    const allowedIds = retryPrompt.match(/Only use these message IDs for evidence and assignments: ([\d, ]+)\./)?.[1]
+    assert.ok(allowedIds)
+    assert.ok(allowedIds.split(', ').includes('160'))
+    assert.ok(!allowedIds.split(', ').includes(String(forwardId)))
+
+    const day = service.getDay('group', dayKey, timezone)
+    assert.equal(day?.status, 'ready')
+    assert.deepEqual(
+      day?.topics.map(({ messageIds }) => messageIds),
+      [[1, 160, 161], [forwardId]]
+    )
+    assert.deepEqual(
+      day?.topics[0]?.evidence.map(({ messageId, timestamp }) => [messageId, timestamp]),
+      [
+        [1, dayStart + 61],
+        [160, dayStart + 220],
+      ]
+    )
+    assert.equal(checkpointStore.getCheckpoint('group', dayKey), null)
+  } finally {
+    checkpointStore.close()
     service.close()
     manager.closeAll()
   }
