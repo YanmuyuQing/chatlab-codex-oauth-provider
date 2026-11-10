@@ -113,6 +113,10 @@ export function applyTopicOperations(
     }))
     if (operation.operation === 'create') {
       if (evidence.length === 0) throw new Error('A new topic must cite at least one current message')
+      // Assignment lookup gives local IDs precedence, so they cannot shadow a ledger ID.
+      if (ledger.topics.some((topic) => topic.id === operation.localId)) {
+        throw new Error(`Local topic id conflicts with an existing topic: ${operation.localId}`)
+      }
       const id = createCanonicalTopicId(context.sessionId, context.dayKey, context.localIdNamespace, operation.localId)
       if (next.topics.some((topic) => topic.id === id)) throw new Error(`Topic already exists: ${id}`)
       if (localTopicIds.has(operation.localId)) throw new Error(`Duplicate local topic id: ${operation.localId}`)
@@ -287,9 +291,12 @@ function assertTopicLedgerSize(ledger: TopicLedger): void {
 }
 
 function createCanonicalTopicId(sessionId: string, dayKey: string, localIdNamespace: string, localId: string): string {
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(localId)) throw new Error(`Invalid local topic id: ${localId}`)
+  const slug = localId.replace(/^topic:/, '')
+  if (localId.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(slug) || /^topic:[0-9a-f]{24}$/i.test(localId)) {
+    throw new Error(`Invalid local topic id: ${localId}`)
+  }
   return `topic:${createHash('sha256')
-    .update(`${sessionId}\u0000${dayKey}\u0000${localIdNamespace}\u0000${localId}`)
+    .update(`${sessionId}\u0000${dayKey}\u0000${localIdNamespace}\u0000${slug}`)
     .digest('hex')
     .slice(0, 24)}`
 }

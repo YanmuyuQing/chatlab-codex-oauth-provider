@@ -98,6 +98,47 @@ test('a create with only out-of-block evidence fails strict validation and recov
   }
 })
 
+test('new local IDs cannot shadow ledger topics or use reserved canonical IDs', () => {
+  const ledger = {
+    topics: [
+      {
+        id: 'topic:existing',
+        title: 'Existing',
+        summary: 'Existing',
+        state: 'active' as const,
+        evidence: [],
+        messageIds: [],
+      },
+    ],
+  }
+  for (const [localId, error] of [
+    ['topic:existing', /conflicts with an existing topic/],
+    ['topic:0123456789abcdef01234567', /Invalid local topic id/],
+  ] as const) {
+    assert.throws(
+      () =>
+        applyTopicOperations(
+          ledger,
+          {
+            operations: [
+              {
+                operation: 'create',
+                localId,
+                title: 'New topic',
+                summary: 'Current discussion.',
+                state: 'active',
+                evidence: [{ messageId: 1, timestamp: 100, role: 'primary' }],
+              },
+            ],
+            assignments: [{ topicRef: localId, messageIds: [1] }],
+          },
+          { sessionId: 'session', dayKey: '2026-08-09', localIdNamespace: 'block:0', currentMessages: messages }
+        ),
+      error
+    )
+  }
+})
+
 test('create local ids are isolated between source blocks', () => {
   const firstLedger = applyTopicOperations(
     createEmptyTopicLedger(),

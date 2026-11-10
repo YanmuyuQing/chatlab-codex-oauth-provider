@@ -305,8 +305,19 @@ test('a forward message reference can be discarded after retry without losing th
                 { messageId: 160, timestamp: 0, role: 'supporting' },
               ],
             },
+            {
+              operation: 'create',
+              localId: 'topic:follow-up',
+              title: 'Follow-up',
+              summary: 'A new discussion in the second block.',
+              state: 'active',
+              evidence: [{ messageId: 162, timestamp: 0, role: 'primary' }],
+            },
           ],
-          assignments: [{ topicRef: topicIds[0], messageIds: [forwardId, 160, 161] }],
+          assignments: [
+            { topicRef: topicIds[0], messageIds: [forwardId, 160, 161] },
+            { topicRef: 'topic:follow-up', messageIds: [162, 163] },
+          ],
         })
       }
       if (userPrompt.includes('Block: 3/3')) {
@@ -319,6 +330,8 @@ test('a forward message reference can be discarded after retry without losing th
           ledger.topics[0]?.evidence.map(({ messageId }) => messageId),
           [1, 160]
         )
+        assert.match(ledger.topics[1]?.id ?? '', /^topic:[0-9a-f]{24}$/)
+        assert.deepEqual(ledger.topics[1]?.messageIds, [162, 163])
         return response({
           operations: [
             {
@@ -334,7 +347,7 @@ test('a forward message reference can be discarded after retry without losing th
         })
       }
       return response({
-        overview: 'Both discussions were summarized.',
+        overview: 'Discussions were summarized.',
         topics: topicIds.map((id) => ({ id, title: 'Discussion', summary: 'Summarized.', state: 'active' })),
       })
     },
@@ -360,7 +373,7 @@ test('a forward message reference can be discarded after retry without losing th
     assert.equal(day?.status, 'ready')
     assert.deepEqual(
       day?.topics.map(({ messageIds }) => messageIds),
-      [[1, 160, 161], [forwardId]]
+      [[1, 160, 161], [162, 163], [forwardId]]
     )
     assert.deepEqual(
       day?.topics[0]?.evidence.map(({ messageId, timestamp }) => [messageId, timestamp]),
